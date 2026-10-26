@@ -21,6 +21,9 @@ async def main():
     if len(token) < 32:
         raise SystemExit('CORE_API_TOKEN must be at least 32 characters')
     store = await BookingStore.connect(settings)
+    # прогреваем пул: первый запрос не должен платить за установку соединений
+    await asyncio.gather(*[store.pool.fetchval('SELECT 1') for _ in range(5)])
+    log.info('database pool warmed')
     app = build_app(store, settings, token)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()

@@ -2,6 +2,7 @@
 import hmac
 import json
 import logging
+import time
 
 from aiohttp import web
 
@@ -62,7 +63,12 @@ async def _render(result, platform, actor):
 
 async def screen(request):
     payload, actor, platform = await _payload(request)
-    result = await request.app['screens'].dispatch(actor, payload.get('action') or 'home')
+    action = payload.get('action') or 'home'
+    started = time.monotonic()
+    result = await request.app['screens'].dispatch(actor, action)
+    elapsed = (time.monotonic() - started) * 1000
+    if elapsed > 800:
+        log.warning('slow screen %s %.0fms platform=%s', action.split(':')[0], elapsed, platform)
     return await _render(result, platform, actor)
 
 
