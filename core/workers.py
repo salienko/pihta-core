@@ -120,15 +120,17 @@ async def payments_loop(store):
             await store.invoice_once()
             await store.reserve_once()
             await store.settlement_once()
-            for _ in range(4):
+            for _ in range(2):
                 if not await store.poll_once():
                     break
-            for _ in range(4):
+            for _ in range(2):
                 if not await store.receipt_once():
                     break
         except Exception as error:
             log.error('payment loop failed: %s: %s', type(error).__name__, str(error)[:200])
-        await asyncio.sleep(2)
+        # Every transaction in this store takes a global advisory lock, so a
+        # chatty payment loop starves guest requests. 15s is plenty for a bathhouse.
+        await asyncio.sleep(15)
 
 
 def channels_from_env(settings):
