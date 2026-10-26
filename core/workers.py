@@ -83,6 +83,11 @@ async def deliver_once(store, settings, channels, session):
                     pass
                 await store.failed(row['id'], 'rate_limit', retry)
                 return True
+            if response.status == 410:
+                # Channel says the recipient can never be reached (blocked the bot,
+                # unknown chat). Retrying forever only floods the log.
+                await store.failed(row['id'], 'recipient_unreachable', permanent=True)
+                return True
             if response.status >= 400:
                 await store.failed(row['id'], f'channel_{response.status}',
                                    min(3600, 5 * 2 ** min(row['attempts'], 9)))
