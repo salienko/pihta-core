@@ -20,5 +20,12 @@ def build_app(store, settings, token=''):
                                   "paykeeper": settings.paykeeper_enabled},
                                  status=200 if db else 503)
 
-    app.add_routes([web.get('/api/status', status)])
+    async def ready(request):
+        try:
+            await store.pool.fetchval('SELECT 1')
+        except Exception:
+            return web.json_response({"ready": False}, status=503)
+        return web.json_response({"ready": True})
+
+    app.add_routes([web.get('/api/status', status), web.get('/ready', ready)])
     return app

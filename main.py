@@ -26,6 +26,7 @@ async def main():
     await runner.setup()
     port = int(os.getenv('PORT', '3000'))
     await web.TCPSite(runner, '0.0.0.0', port).start()
+    log.info('release=%s schema=%s', os.getenv('RELEASE', 'dev'), os.getenv('SCHEMA_VERSION', 'v1'))
     log.info('pihta-core listening on 0.0.0.0:%s', port)
     try:
         await asyncio.Event().wait()
