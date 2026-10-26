@@ -14,9 +14,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name
 log = logging.getLogger('core')
 
 WORKER_LOCK = 7319846
-PLATFORMS_SQL = ("CREATE TABLE IF NOT EXISTS actor_platforms ("
-                 "actor bigint primary key, platform text not null, "
-                 "updated_at timestamptz not null default now())")
 
 
 async def main():
@@ -27,7 +24,6 @@ async def main():
     if len(token) < 32:
         raise SystemExit('CORE_API_TOKEN must be at least 32 characters')
     store = await BookingStore.connect(settings)
-    await store.pool.execute(PLATFORMS_SQL)
     await asyncio.gather(*[store.pool.fetchval('SELECT 1') for _ in range(5)])
     log.info('database pool warmed')
 

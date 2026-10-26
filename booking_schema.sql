@@ -75,3 +75,9 @@ BEGIN
 END;$$;
 DROP TRIGGER IF EXISTS snapshot_immutable ON bookings;
 CREATE TRIGGER snapshot_immutable BEFORE UPDATE ON bookings FOR EACH ROW EXECUTE FUNCTION protect_snapshot();
+
+-- which messenger an actor last spoke from; delivery needs it to route notifications
+CREATE TABLE IF NOT EXISTS actor_platforms(
+ actor bigint PRIMARY KEY,
+ platform text NOT NULL CHECK (platform IN ('telegram','max')),
+ updated_at timestamptz NOT NULL DEFAULT now());

@@ -67,3 +67,23 @@ class CoreApi(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/api/v1/screen', headers={'X-Core-Token': TOKEN},
                                           json={'platform': 'vk', 'user_id': 7})
         self.assertEqual(response.status, 400)
+
+    async def test_contact_endpoint_accepts_shared_phone(self):
+        """The messenger contact button posts here; a 404 here broke the flow."""
+        headers = {'X-Core-Token': TOKEN}
+        await self.client.post('/api/v1/screen', headers=headers,
+                               json={'platform': 'telegram', 'user_id': 777, 'action': 'begin'})
+        await self.client.post('/api/v1/text', headers=headers,
+                               json={'platform': 'telegram', 'user_id': 777, 'text': 'Иван'})
+        response = await self.client.post('/api/v1/contact', headers=headers,
+                                          json={'platform': 'telegram', 'user_id': 777,
+                                                'phone': '+79812440011'})
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(body['state'], 'guests')
+        self.assertTrue(body['rows'])
+
+    async def test_contact_endpoint_requires_token(self):
+        response = await self.client.post('/api/v1/contact',
+                                          json={'platform': 'max', 'user_id': 5, 'phone': '+79812440011'})
+        self.assertEqual(response.status, 401)

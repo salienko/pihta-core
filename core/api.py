@@ -91,11 +91,21 @@ async def text(request):
     return await _render(result, platform, actor)
 
 
+async def contact(request):
+    """A shared phone number is just text input for the phone step."""
+    payload, actor, platform = await _payload(request)
+    await _remember(request, actor, platform)
+    phone = str(payload.get('phone') or payload.get('contact_phone') or '')
+    result = await request.app['screens'].text(actor, phone, phone)
+    return await _render(result, platform, actor)
+
+
 def add_routes(app):
     """Mount the JSON API as a subapp; a subapp has its own state, so seed it."""
     api = web.Application(middlewares=[api_auth], client_max_size=65536)
     api['core_token'] = app['core_token']
     api['screens'] = Screens(app['settings'], app['store'])
     api['store'] = app['store']
-    api.add_routes([web.get('/ping', ping), web.post('/screen', screen), web.post('/text', text)])
+    api.add_routes([web.get('/ping', ping), web.post('/screen', screen),
+                    web.post('/text', text), web.post('/contact', contact)])
     app.add_subapp('/api/v1/', api)
