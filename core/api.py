@@ -53,6 +53,17 @@ async def _payload(request):
     return payload, actor, platform
 
 
+async def _remember(request, actor, platform):
+    """Delivery needs to know which channel to push notifications to."""
+    try:
+        await request.app['store'].pool.execute(
+            "INSERT INTO actor_platforms(actor, platform, updated_at) VALUES($1,$2,now()) "
+            "ON CONFLICT (actor) DO UPDATE SET platform=EXCLUDED.platform, updated_at=now()",
+            actor, platform)
+    except Exception:
+        log.warning('platform memory failed for %s', actor)
+
+
 async def _render(result, platform, actor):
     if result.nothing:
         return _json({"nothing": True, "platform": platform, "actor": actor})
@@ -74,6 +85,7 @@ async def screen(request):
 
 async def text(request):
     payload, actor, platform = await _payload(request)
+    await _remember(request, actor, platform)
     result = await request.app['screens'].text(actor, str(payload.get('text') or ''),
                                                str(payload.get('contact_phone') or ''))
     return await _render(result, platform, actor)
@@ -84,5 +96,6 @@ def add_routes(app):
     api = web.Application(middlewares=[api_auth], client_max_size=65536)
     api['core_token'] = app['core_token']
     api['screens'] = Screens(app['settings'], app['store'])
+    api['store'] = app['store']
     api.add_routes([web.get('/ping', ping), web.post('/screen', screen), web.post('/text', text)])
     app.add_subapp('/api/v1/', api)
