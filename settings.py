@@ -64,8 +64,9 @@ def load():
     pk_user=os.getenv('PAYKEEPER_USER','').strip()
     pk_password=os.getenv('PAYKEEPER_PASSWORD','')
     pk_secret=os.getenv('PAYKEEPER_SECRET','')
-    tax=os.getenv('PAYKEEPER_TAX','').strip()
-    types=tuple(os.getenv('PAYKEEPER_'+kind+'_TYPE','').strip() for kind in ('DEPOSIT','FULL','BALANCE'))
+    # Business constants: the bathhouse sells services at a single tax code and full payment.
+    tax=os.getenv('PAYKEEPER_TAX','none').strip() or 'none'
+    types=tuple(os.getenv('PAYKEEPER_'+kind+'_TYPE','full').strip() or 'full' for kind in ('DEPOSIT','FULL','BALANCE'))
     if enabled:
         parsed=urlparse(pk_url)
         if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or parsed.port not in (None,443):
