@@ -313,25 +313,27 @@ class Screens:
         r = await self.store.get(actor, ident)
         body = []
         if r['status'] in ('pending', 'confirmed') and r['paid'] < payment_total(r):
-            if not r['paid']:
-                body += [[btn('💳 Внести предоплату 2 000 ₽', 'payrequest:deposit:' + ident)],
-                         [btn('💳 Оплатить полностью — ' + rub(payment_total(r)), 'payrequest:full:' + ident)]]
-            else:
-                body.append([btn('💳 Оплатить — ' + rub(payment_total(r) - r['paid']), 'payrequest:balance:' + ident)])
             requests = await self.store.payment_requests(actor, ident)
             linked = next((req for req in requests if req['url']), None)
+
+            def pay(label, kind):
+                # Once the invoice exists the button itself becomes the link — same slot,
+                # new label — so a second press opens the ready invoice instead of
+                # ordering another one. Deposit, full amount and balance behave alike.
+                if linked and linked['kind'] == kind:
+                    return [btn('🔗 Перейти к оплате ' + rub(linked['amount']), url=linked['url'])]
+                return [btn(label, f'payrequest:{kind}:{ident}')]
+
+            if not r['paid']:
+                body.append(pay('💳 Внести предоплату 2 000 ₽', 'deposit'))
+                body.append(pay('💳 Оплатить полностью — ' + rub(payment_total(r)), 'full'))
+            else:
+                body.append(pay('💳 Оплатить — ' + rub(payment_total(r) - r['paid']), 'balance'))
             if linked:
                 automatic = bool(await self.store.pool.fetchval(
                     'SELECT 1 FROM paykeeper_invoices WHERE request_id=$1', linked['id']))
                 check_label = 'Проверить оплату ' + rub(linked['amount']) if automatic else '✅ Уже оплатил'
-                check_action = ('paycheck:' if automatic else 'payreport:') + linked['id']
-                if automatic:
-                    index = 1 if linked['kind'] == 'full' and not r['paid'] else 0
-                    body[index] = [btn(check_label, check_action)]
-                    body.append([btn('🔗 Перейти к оплате', url=linked['url'])])
-                else:
-                    body += [[btn('🔗 Перейти к оплате', url=linked['url'])],
-                             [btn(check_label, check_action)]]
+                body.append([btn(check_label, ('paycheck:' if automatic else 'payreport:') + linked['id'])])
         if self.settings.paykeeper_enabled:
             body.append([btn('Платежи и чеки', 'payhistory:' + ident)])
         if r['status'] in ('pending', 'confirmed'):
