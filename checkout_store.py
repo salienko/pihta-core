@@ -1,8 +1,12 @@
 """Persistent draft cart and administrator-approved duration requests."""
 import json
 from datetime import datetime, timedelta
+from uuid import uuid4
 from domain import RuleError, window, now
-from store import uid
+
+
+def uid() -> str:
+    return uuid4().hex
 
 
 class CheckoutStore:
