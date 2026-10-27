@@ -17,6 +17,75 @@ from staff_booking import StaffBookingStore
 
 SCHEMA='pihta_booking_v2'
 LOCK=7319845
+WORKER_LOCK=7319846
+
+class WorkerLock:
+    """Single-instance lock of the core.
+
+    The advisory lock is session-scoped: it lives on one dedicated connection.
+    If that connection dies (network drop, DB restart, idle timeout) the lock
+    is released silently and a second core instance may start, sending the
+    same notifications twice. `holds()` re-checks that this very session still
+    owns the lock, so the caller can stop the background workers.
+    """
+    def __init__(self,pool,key=WORKER_LOCK):
+        self.pool=pool
+        self.key=key
+        self.conn=None
+        self.pid=None
+
+    async def acquire(self):
+        """Try to take the lock. Returns False if another instance owns it."""
+        self.conn=await self.pool.acquire()
+        try:
+            taken=await self.conn.fetchval('SELECT pg_try_advisory_lock($1)',self.key)
+        except BaseException:
+            await self.pool.release(self.conn)
+            self.conn=None
+            raise
+        if not taken:
+            await self.pool.release(self.conn)
+            self.conn=None
+            return False
+        self.pid=await self.conn.fetchval('SELECT pg_backend_pid()')
+        return True
+
+    async def holds(self):
+        """True only if our own backend session still holds the advisory lock."""
+        if self.conn is None or self.pid is None:
+            return False
+        try:
+            pid=await self.conn.fetchval('SELECT pg_backend_pid()')
+        except Exception:
+            return False
+        if pid!=self.pid:
+            # The pooled connection was replaced: our session is gone and so is
+            # the lock.
+            return False
+        try:
+            row=await self.pool.fetchrow(
+                'SELECT count(*) AS n FROM pg_locks WHERE locktype=$1 AND pid=$2 AND granted'
+                ' AND classid::bigint=$3 AND objid::bigint=$4',
+                'advisory',pid,self.key>>32,self.key&0xffffffff)
+        except Exception:
+            # Cannot prove the lock is alive: treat it as lost, the caller
+            # stops the workers and the platform restarts the instance.
+            return False
+        return bool(row['n'])
+
+    async def release(self):
+        if self.conn is None:
+            return
+        try:
+            await self.conn.fetchval('SELECT pg_advisory_unlock($1)',self.key)
+        except Exception:
+            pass
+        try:
+            await self.pool.release(self.conn)
+        except Exception:
+            pass
+        self.conn=None
+        self.pid=None
 
 def unpack(row):
     if not row:return None
