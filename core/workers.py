@@ -118,6 +118,21 @@ async def delivery_loop(store, settings, channels):
             await asyncio.sleep(10)
 
 
+CLEANUP_INTERVAL = 24 * 3600
+
+
+async def cleanup_loop(store, interval=CLEANUP_INTERVAL):
+    """Раз в сутки чистим старые данные: черновики, доставленный outbox,
+    старый audit, истёкшие pending_inputs. Брони и платежи не трогаем."""
+    while True:
+        try:
+            counts = await store.cleanup_old_data()
+            log.info('cleanup done: %s', counts)
+        except Exception as error:
+            log.error('cleanup failed: %s: %s', type(error).__name__, str(error)[:200])
+        await asyncio.sleep(interval)
+
+
 async def payments_loop(store):
     """PayKeeper: create invoices, poll statuses, receipts, reservations."""
     while True:

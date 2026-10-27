@@ -76,7 +76,7 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
             token=secrets.token_hex(6);profile=await db.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor)
             data={'flow_version':VERSION,'guests':1,'children':0,'hours':2,'cart':{}}
             if profile:data.update(name=profile['name'],phone=profile['phone'])
-            await db.execute("INSERT INTO drafts VALUES($1,$2,'name',$3::jsonb,0) ON CONFLICT(telegram_id) DO UPDATE SET token=$2,state='name',data=$3::jsonb,revision=drafts.revision+1",actor,token,json.dumps(data))
+            await db.execute("INSERT INTO drafts(telegram_id,token,state,data,revision,updated_at) VALUES($1,$2,'name',$3::jsonb,0,now()) ON CONFLICT(telegram_id) DO UPDATE SET token=$2,state='name',data=$3::jsonb,revision=drafts.revision+1,updated_at=now()",actor,token,json.dumps(data))
             return token
 
     async def draft(self,actor,token=None):
@@ -85,11 +85,11 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
         return d
 
     async def save(self,actor,d,state,data):
-        result=await self.pool.execute('UPDATE drafts SET state=$1,data=$2::jsonb,revision=revision+1 WHERE telegram_id=$3 AND token=$4 AND revision=$5 AND state<>\'submitted\'',state,json.dumps(data,ensure_ascii=False),actor,d['token'],d['revision'])
+        result=await self.pool.execute('UPDATE drafts SET state=$1,data=$2::jsonb,revision=revision+1,updated_at=now() WHERE telegram_id=$3 AND token=$4 AND revision=$5 AND state<>\'submitted\'',state,json.dumps(data,ensure_ascii=False),actor,d['token'],d['revision'])
         if result!='UPDATE 1':raise RuleError('Экран уже изменился. Откройте текущее оформление.')
 
     async def abandon_draft(self,actor,d):
-        result=await self.pool.execute("UPDATE drafts SET state='discarded',revision=revision+1 WHERE telegram_id=$1 AND token=$2 AND revision=$3 AND state NOT IN ('submitted','discarded')",actor,d['token'],d['revision'])
+        result=await self.pool.execute("UPDATE drafts SET state='discarded',revision=revision+1,updated_at=now() WHERE telegram_id=$1 AND token=$2 AND revision=$3 AND state NOT IN ('submitted','discarded')",actor,d['token'],d['revision'])
         if result!='UPDATE 1':raise RuleError('Черновик уже изменился.')
 
     async def reset_draft(self,actor,d):
@@ -100,7 +100,7 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
             profile=await db.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor)
             data={'flow_version':VERSION,'guests':1,'children':0,'hours':2,'cart':{}}
             if profile:data.update(name=profile['name'],phone=profile['phone'])
-            await db.execute("UPDATE drafts SET token=$1,state='name',data=$2::jsonb,revision=revision+1 WHERE telegram_id=$3",secrets.token_hex(6),json.dumps(data,ensure_ascii=False),actor)
+            await db.execute("UPDATE drafts SET token=$1,state='name',data=$2::jsonb,revision=revision+1,updated_at=now() WHERE telegram_id=$3",secrets.token_hex(6),json.dumps(data,ensure_ascii=False),actor)
 
     async def profile(self,actor,name=None,phone=None):
         if name is None:return unpack(await self.pool.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor))
@@ -170,7 +170,7 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
             ident=secrets.token_hex(5).upper()
             await db.execute("INSERT INTO bookings(id,draft_token,telegram_id,starts_at,ends_at,blocked_until,data,estimate,rules_hash,created_at,status) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,'pending')",ident,token,actor,start,end,end+timedelta(hours=1),json.dumps(data,ensure_ascii=False),json.dumps(q,ensure_ascii=False),self.settings.rules_hash,clock)
             await db.execute('INSERT INTO profiles VALUES($1,$2,$3) ON CONFLICT(telegram_id) DO UPDATE SET name=$2,phone=$3',actor,data['name'],data['phone'])
-            await db.execute("UPDATE drafts SET state='submitted',revision=revision+1 WHERE telegram_id=$1",actor)
+            await db.execute("UPDATE drafts SET state='submitted',revision=revision+1,updated_at=now() WHERE telegram_id=$1",actor)
             row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',ident))
             await self.audit(db,ident,actor,'submitted');await self.enqueue(db,row,'submitted',card(row))
             return ident,True
@@ -308,6 +308,31 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
                             await self.enqueue(db,row,f'reminder:confirmed:{hours}',f"Напоминание: сеанс № {row['id']} {start.astimezone(TZ):%d.%m %H:%M}. Остаток оплаты, если есть, внесите до начала сеанса.",[row['telegram_id']])
             await db.execute('DELETE FROM web_tokens WHERE expires_at<$1',clock)
             await db.execute('DELETE FROM web_sessions WHERE expires_at<$1',clock)
+
+    async def cleanup_old_data(self,clock=None):
+        """Ежедневная уборка старых данных. Брони и платежи не трогаем."""
+        async with self.pool.acquire() as db:
+            async with db.transaction():
+                now=clock or await db.fetchval('SELECT clock_timestamp()')
+                counts={}
+                has_column=await db.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema=current_schema() AND table_name='drafts' AND column_name='updated_at')")
+                if has_column:
+                    counts['drafts']=await db.execute(
+                        'DELETE FROM drafts WHERE updated_at<$1',now-timedelta(days=2))
+                else:
+                    counts['drafts']='SKIP'
+                counts['outbox']=await db.execute(
+                    'DELETE FROM outbox WHERE delivered_at IS NOT NULL AND delivered_at<$1',now-timedelta(days=30))
+                counts['audit']=await db.execute(
+                    'DELETE FROM audit WHERE created_at<$1',now-timedelta(days=365))
+                if await db.fetchval("SELECT to_regclass('pending_inputs') IS NOT NULL"):
+                    counts['pending_inputs']=await db.execute(
+                        'DELETE FROM pending_inputs WHERE expires_at<$1',now)
+                else:
+                    counts['pending_inputs']='SKIP'
+                return {k:(int(v.split()[-1]) if v.startswith('DELETE') else v) for k,v in counts.items()}
 
     async def next_delivery(self):
         async with self.pool.acquire() as db:
