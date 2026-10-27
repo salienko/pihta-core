@@ -179,9 +179,34 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
         if staff:self.admin(actor)
         async with self.tx() as db:
             await self.expire(db,await self.clock(db))
-            r=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',ident))
+            r=unpack(await db.fetchrow(
+                'SELECT b.*, c.phone AS contact_phone FROM bookings b '
+                'LEFT JOIN booking_contacts c ON c.booking_id=b.id WHERE b.id=$1',ident))
             if not r or (not staff and r['telegram_id']!=actor):raise RuleError('Бронь недоступна.')
+            # снимок брони неизменяем, поэтому исправленный телефон хранится рядом
+            r['contact_phone']=r.get('contact_phone') or r['data'].get('phone','')
             return r
+
+    async def set_contact_phone(self,ident,phone,actor):
+        async with self.tx() as db:
+            await db.execute('INSERT INTO booking_contacts(booking_id,phone,updated_by,updated_at) '
+                             'VALUES($1,$2,$3,now()) ON CONFLICT(booking_id) DO UPDATE '
+                             'SET phone=EXCLUDED.phone,updated_by=EXCLUDED.updated_by,updated_at=now()',
+                             ident,phone,actor)
+            await self.audit(db,ident,actor,'phone_changed',{'phone':phone})
+
+    async def pending_input(self,actor):
+        return await self.pool.fetchrow(
+            'SELECT * FROM pending_inputs WHERE actor=$1 AND expires_at>now()',actor)
+
+    async def set_pending_input(self,actor,kind,ref=None,minutes=30):
+        await self.pool.execute(
+            "INSERT INTO pending_inputs(actor,kind,ref,expires_at) VALUES($1,$2,$3,now()+$4*interval '1 minute') "
+            'ON CONFLICT(actor) DO UPDATE SET kind=EXCLUDED.kind,ref=EXCLUDED.ref,'
+            'expires_at=EXCLUDED.expires_at,created_at=now()',actor,kind,ref,float(minutes))
+
+    async def clear_pending_input(self,actor):
+        await self.pool.execute('DELETE FROM pending_inputs WHERE actor=$1',actor)
 
     async def listing(self,actor,history=False,staff=False,offset=0,status_filter=None):
         if staff:self.admin(actor)

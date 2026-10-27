@@ -81,3 +81,18 @@ CREATE TABLE IF NOT EXISTS actor_platforms(
  actor bigint PRIMARY KEY,
  platform text NOT NULL CHECK (platform IN ('telegram','max')),
  updated_at timestamptz NOT NULL DEFAULT now());
+
+-- Телефон можно исправить, не ломая снимок брони: правка живёт отдельной записью
+CREATE TABLE IF NOT EXISTS booking_contacts(
+ booking_id text PRIMARY KEY REFERENCES bookings(id),
+ phone text NOT NULL,
+ updated_by bigint NOT NULL,
+ updated_at timestamptz NOT NULL DEFAULT now());
+
+-- Одно поле, которое бот ждёт от гостя прямо сейчас (например, новый телефон брони)
+CREATE TABLE IF NOT EXISTS pending_inputs(
+ actor bigint PRIMARY KEY,
+ kind text NOT NULL,
+ ref text,
+ expires_at timestamptz NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now());

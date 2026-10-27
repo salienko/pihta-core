@@ -81,7 +81,8 @@ def card(row, personal=True):
     if row.get('reason'):lines+=['','Причина: '+row['reason']]
     if row.get('no_show'):lines+=['','Администратор отметил неявку.']
     if row['status']=='confirmed' and start<=datetime.now(TZ)<end:lines+=['','Сеанс идёт. Окончание по брони.']
-    if personal:lines += ['',f"👤 {d['name']}",f"📱 {d['phone']}"]
+    phone=row.get('contact_phone') or d['phone']
+    if personal:lines += ['',f"👤 {d['name']}",f"📱 {phone}"]
     if row['status'] in ('pending','confirmed'):
         if not paid:
             lines += ['','Для подтверждения бронирования необходимо внести предоплату 2 000 ₽ либо оплатить всю сумму сразу.','Получите ссылку для оплаты ↓']

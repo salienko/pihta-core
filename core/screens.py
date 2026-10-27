@@ -334,6 +334,8 @@ class Screens:
                     'SELECT 1 FROM paykeeper_invoices WHERE request_id=$1', linked['id']))
                 check_label = 'Проверить оплату ' + rub(linked['amount']) if automatic else '✅ Уже оплатил'
                 body.append([btn(check_label, ('paycheck:' if automatic else 'payreport:') + linked['id'])])
+        if r['status'] in ('pending', 'confirmed') and r['paid'] < payment_total(r):
+            body.append([btn('✏️ Изменить телефон', 'editphone:' + ident)])
         if self.settings.paykeeper_enabled:
             body.append([btn('Платежи и чеки', 'payhistory:' + ident)])
         if r['status'] in ('pending', 'confirmed'):
@@ -386,6 +388,24 @@ class Screens:
                 return await self.listing(actor)
             if text in ('/help', 'Правила', 'Контакты', 'Цены', 'Цены и услуги', 'Помощь'):
                 return await self.info(actor, 'Помощь' if text == '/help' else text)
+            pending = await self.store.pending_input(actor)
+            if pending and pending['kind'] == 'phone' and pending['ref']:
+                back = 'open:' + pending['ref']
+                if text in ('← Назад', '✕ Отменить оформление', '🏠 Главное меню'):
+                    await self.store.clear_pending_input(actor)
+                    return await self.home(actor) if text == '🏠 Главное меню' else await self.show(actor, pending['ref'])
+                try:
+                    phone = normalize_phone(contact_phone or text)
+                except RuleError:
+                    return Screen('Не получилось разобрать номер.\n\n'
+                                  'Напишите в виде +7 981 123-45-67 или нажмите «Поделиться номером».',
+                                  photo='booking', reply_contact=True,
+                                  rows=rows([btn('← Назад', back)]) + nav())
+                await self.store.set_contact_phone(pending['ref'], phone, actor)
+                await self.store.clear_pending_input(actor)
+                screen = await self.show(actor, pending['ref'])
+                return Screen(screen.text, screen.photo, screen.rows, screen.state,
+                              notice='Телефон обновлён: ' + phone)
             d = await self.unfinished(actor)
             if not d:
                 return await self.home(actor)
@@ -470,6 +490,16 @@ class Screens:
                         f'{d.get("name", "")}\n{d.get("phone", "")}\n\n'
                         'Архив прежней версии. Статус уточните у администратора.')
                 return Screen(text, rows=rows([btn('← Назад', 'list:1:0')]) + nav())
+            if action == 'editphone':
+                r = await self.store.get(actor, parts[1])
+                if r['status'] not in ('pending', 'confirmed') or r['paid'] >= payment_total(r):
+                    raise RuleError('Телефон меняется только до полной оплаты.')
+                await self.store.set_pending_input(actor, 'phone', parts[1])
+                return Screen('📱 Укажите новый номер телефона\n\n'
+                              'Нажмите «Поделиться номером» или напишите его сообщением.\n'
+                              'Позвоним по нему, если понадобится уточнить бронь.',
+                              photo='booking', reply_contact=True,
+                              rows=rows([btn('← Назад', 'open:' + parts[1])]) + nav())
             if action == 'cancelask':
                 r = await self.store.get(actor, parts[1])
                 if r['status'] == 'confirmed' or r['paid']:

@@ -41,12 +41,14 @@ class PaymentStore:
             req=await db.fetchrow("INSERT INTO payment_requests(id,booking_id,kind,amount,paid_before) VALUES($1,$2,$3,$4,$5) RETURNING *",request_id,ident,kind,amount,row['paid'])
             if self.settings.paykeeper_enabled:
                 payment_type=getattr(self.settings,'paykeeper_'+kind+'_type')
+                # счёт выставляется на исправленный телефон, если гость его менял
                 await db.execute('INSERT INTO paykeeper_invoices(request_id,booking_id,actor,amount,paid_before,client_id,phone,payment_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-                                 request_id,ident,actor,amount,row['paid'],row['data']['name'],row['data']['phone'],payment_type)
+                                 request_id,ident,actor,amount,row['paid'],row['data']['name'],
+                                 row.get('contact_phone') or row['data']['phone'],payment_type)
                 await self.audit(db,ident,actor,'paykeeper_invoice_requested',dict(request_id=request_id,kind=kind,amount=amount))
                 return dict(req),True
             label={'deposit':'предоплата','full':'полная оплата','balance':'доплата остатка'}[kind]
-            text=(f'💳 Запрос ссылки · {label}\nБронь № {ident}\n👤 {row["data"]["name"]}\n📱 {row["data"]["phone"]}\n'
+            text=(f'💳 Запрос ссылки · {label}\nБронь № {ident}\n👤 {row["data"]["name"]}\n📱 {row.get("contact_phone") or row["data"]["phone"]}\n'
                   f'Всего: {rub(total(row))}\nВнесено: {rub(row["paid"])}\nОсталось: {rub(due)}\n'
                   f'Ссылка нужна на: {rub(amount)}\n\nОтветьте на это сообщение одной HTTPS-ссылкой для оплаты.')
             await self.enqueue(db,row,'payreq:'+request_id,text,self.settings.admin_ids)
