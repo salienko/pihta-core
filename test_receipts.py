@@ -49,7 +49,7 @@ class Setup(unittest.IsolatedAsyncioTestCase):
         start = (datetime.now(TZ) + timedelta(days=4)).replace(hour=13, minute=0, second=0, microsecond=0)
         token = await self.store.begin(2)
         d = await self.store.draft(2)
-        catalog, holidays = await self.store.pricing()
+        catalog, holidays, rates = await self.store.pricing()
         data = dict(d['data'], name='Гость', phone=PHONE, day=start.date().isoformat(),
                     start=start.isoformat(), consent=True, rules_hash=self.settings.rules_hash)
         data['quote'] = estimate(data, catalog, holidays)
