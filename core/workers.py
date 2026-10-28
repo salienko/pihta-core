@@ -146,6 +146,9 @@ async def payments_loop(store):
             for _ in range(2):
                 if not await store.receipt_once():
                     break
+            for _ in range(2):
+                if not await store.unmatched_receipt_once():
+                    break
         except Exception as error:
             log.error('payment loop failed: %s: %s', type(error).__name__, str(error)[:200])
         # Every transaction in this store takes a global advisory lock, so a
