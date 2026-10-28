@@ -5,6 +5,7 @@ import hashlib
 import hmac
 from html import escape
 import os
+import re
 import secrets
 from aiohttp import web
 from booking_domain import TZ,RATE_LABELS,RuleError,LABELS,card,rub
@@ -22,7 +23,10 @@ def money(value):
     except (InvalidOperation,ValueError,TypeError):raise RuleError('Введите сумму в рублях, не более двух знаков после точки.')
 def rubles(kopecks):return f'{kopecks//100}.{kopecks%100:02}'
 
-ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки','service_price':'Изменена услуга и её цена','rate_price':'Изменён тариф аренды'}
+ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки','service_price':'Изменена услуга и её цена','rate_price':'Изменён тариф аренды','receipt_recheck':'Перепроверка чека в ОФД'}
+# Состояние чека в ОФД. missing и failed — окончательные: опросы ОФД остановлены,
+# ссылка появится только после ручной перепроверки.
+RECEIPT_STATES={'waiting':'чек запрошен у ОФД','formed':'чек получен','missing':'чек не сформирован','failed':'чек не удалось проверить в ОФД'}
 
 def make_app(store,settings,secure=True):
     @web.middleware
@@ -103,12 +107,14 @@ def make_app(store,settings,secure=True):
         for event in events:body+='<p>'+e(str(event['created_at'].astimezone(TZ)))+' · '+e(ACTION_NAMES.get(event['action'],event['action']))+' · сотрудник '+e(event['actor'])+'</p>'
         body+='</div>'
         if settings.paykeeper_enabled:
-            body+='<div class="card"><h2>Платежи и чеки</h2><a href="/payments?booking='+e(r['id'])+'">Выставить счёт по этой брони</a>'
+            body+='<div class="card"><h2>Платежи и чеки</h2><a href="/payments?booking='+e(r['id'])+'">Выставить счёт по этой брони</a><p class="muted">Чек ищем в ОФД автоматически около 40 минут. Если касса его не выдала, статус станет «чек не сформирован», опросы прекратятся, а ссылку можно запросить повторно.</p>'
             for p in await store.payment_history(s['actor'],r['id'],staff=True):
                 body+='<p>'+e(rub(p['amount']))+' · '+e({'applied':'Учтён','review':'Требует сверки','standalone':'Отдельный платёж'}[p['disposition']])
                 if p['receipt_url']:body+=' · <a href="'+e(p['receipt_url'])+'" target="_blank" rel="noreferrer">Открыть чек</a>'
-                else:body+=' · Чек формируется'
+                else:body+=' · '+e(RECEIPT_STATES.get(p['receipt_state'],RECEIPT_STATES['waiting']))
                 body+='</p>'
+                if not p['receipt_url']:
+                    body+=form(s,'/receipt/'+e(p['payment_id'])+'/recheck?back='+e(r['id']),'','Перепроверить чек')
             body+='</div>'
             if settings.paykeeper_settlement_enabled:
                 final=await store.pool.fetchrow('SELECT * FROM paykeeper_settlements WHERE booking_id=$1',r['id'])
@@ -248,6 +254,21 @@ def make_app(store,settings,secure=True):
             if i['state']=='uncertain':body+='<p>Проверьте в платёжном сервисе счёт с этим номером запроса. Повторное создание заблокировано.</p>'+form(s,'/payments/'+i['request_id']+'/resolve','<label>Номер найденного счёта<input name="invoice_id" maxlength="40" required></label>','Проверить и привязать счёт')
             for r in await store.pool.fetch('SELECT r.* FROM paykeeper_fiscal_receipts r JOIN paykeeper_payments p USING(payment_id) WHERE p.request_id=$1',i['request_id']):
                 body+='<p><a href="'+e(r['url'])+'" target="_blank" rel="noreferrer">Открыть чек</a></p>'
+            for p in await store.pool.fetch("SELECT * FROM paykeeper_payments WHERE request_id=$1 AND receipt_state<>'formed' ORDER BY created_at",i['request_id']):
+                body+='<p>Платёж № '+e(p['payment_id'])+' · '+e(RECEIPT_STATES.get(p['receipt_state'],RECEIPT_STATES['waiting']))
+                if p['receipt_checked_at']:body+=' · проверено '+e(p['receipt_checked_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M'))
+                body+='</p>'+form(s,'/receipt/'+e(p['payment_id'])+'/recheck','','Перепроверить чек')
+            body+='</div>'
+        unmatched=await store.pool.fetch('SELECT * FROM paykeeper_unmatched ORDER BY created_at DESC LIMIT 50')
+        if unmatched:
+            body+='<div class="card"><h2>Неопознанные платежи</h2><p>Деньги поступили, но счёт бота с таким номером заказа не найден. Брони не изменены. Чек ищем в ОФД по номеру платежа; при необходимости перепроверьте вручную.</p>'
+            for u in unmatched:
+                body+='<p>'+e(rub(u['amount']))+' · платёж № '+e(u['payment_id'])+' · заказ '+e(u['order_id'])+' · '+e(u['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M'))
+                if u['client_id']:body+=' · телефон/клиент '+e(u['client_id'])
+                body+='</p>'
+                if u['receipt_url']:body+='<p><a href="'+e(u['receipt_url'])+'" target="_blank" rel="noreferrer">Открыть чек</a></p>'
+                else:
+                    body+='<p>'+e(RECEIPT_STATES.get(u['receipt_state'],RECEIPT_STATES['waiting']))+'</p>'+form(s,'/receipt/'+e(u['payment_id'])+'/recheck?kind=unmatched','','Перепроверить чек')
             body+='</div>'
         return web.Response(text=page('Счета',body+'<script src="/payments.js" defer></script>'),content_type='text/html')
 
@@ -262,6 +283,14 @@ def make_app(store,settings,secure=True):
         await store.resolve_invoice(s['actor'],request.match_info['id'],str(data.get('invoice_id','')))
         raise web.HTTPFound('/payments')
 
+    async def receipt_recheck(request):
+        """Ручная перепроверка чека: админ просит ОФД ещё раз, лимит попыток сбрасывается."""
+        s=await auth(request,True);ident=request.match_info['id']
+        if request.query.get('kind')=='unmatched':await store.recheck_unmatched_receipt(s['actor'],ident)
+        else:await store.recheck_receipt(s['actor'],ident)
+        back=request.query.get('back','')
+        raise web.HTTPFound('/booking/'+back if re.fullmatch('[A-Z0-9]{1,32}',back) else '/payments')
+
     async def payment_js(request):
         return web.Response(text="document.addEventListener('click',async e=>{const b=e.target.closest('[data-copy]');if(!b)return;const s=b.nextElementSibling;try{await navigator.clipboard.writeText(b.dataset.copy);s.textContent=' Ссылка скопирована';}catch{const i=b.previousElementSibling.querySelector('input');i.focus();i.select();s.textContent=' Скопируйте выделенную ссылку';}});",content_type='text/javascript')
 
@@ -270,7 +299,7 @@ def make_app(store,settings,secure=True):
     mount(app,store,settings)
     from admin_booking import mount_staff_booking
     mount_staff_booking(app,store,auth,form,page,e,navigation)
-    app.add_routes([web.get('/payments',payments),web.post('/payments',payment_create),web.post('/payments/{id}/resolve',payment_resolve),web.get('/payments.js',payment_js)])
+    app.add_routes([web.get('/payments',payments),web.post('/payments',payment_create),web.post('/payments/{id}/resolve',payment_resolve),web.post('/receipt/{id}/recheck',receipt_recheck),web.get('/payments.js',payment_js)])
     app.add_routes([web.get('/style.css',style),web.get('/health',health),web.get('/login',login_page),web.get('/login.js',login_js),web.post('/login',login),web.post('/logout',logout),web.get('/',home),web.get('/booking/{id}',detail),web.post('/booking/{id}/{action}',action),web.post('/block',block),web.post('/unblock/{id}',unblock),web.get('/archive',archive),web.get('/audit',audit),web.get('/catalog',catalog),web.post('/holiday',holiday),web.post('/holiday/remove',remove_holiday),web.get('/prices',prices),web.post('/prices/rate/{code}',price_rate),web.post('/prices/service/{code}',price_service)])
     return app
 

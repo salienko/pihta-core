@@ -72,10 +72,42 @@ CREATE TABLE IF NOT EXISTS paykeeper_fiscal_receipts(
  id text PRIMARY KEY,payment_id text NOT NULL REFERENCES paykeeper_payments(payment_id),
  url text NOT NULL,created_at timestamptz NOT NULL DEFAULT now()
 );
+-- Состояние чека в ОФД: waiting (ищем) → formed (ссылка есть) / missing (касса чек не выдала) /
+-- failed (ОФД не ответил). missing и failed терминальны: автоматические опросы прекращаются,
+-- заново проверить можно вручную из админки.
+ALTER TABLE paykeeper_payments ADD COLUMN IF NOT EXISTS receipt_state text NOT NULL DEFAULT 'waiting';
+ALTER TABLE paykeeper_payments ADD COLUMN IF NOT EXISTS receipt_checked_at timestamptz;
+ALTER TABLE paykeeper_payments ADD COLUMN IF NOT EXISTS receipt_error text NOT NULL DEFAULT '';
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='paykeeper_payments_receipt_state_check' AND conrelid='paykeeper_payments'::regclass) THEN
+  ALTER TABLE paykeeper_payments ADD CONSTRAINT paykeeper_payments_receipt_state_check
+   CHECK(receipt_state IN ('waiting','formed','missing','failed'));
+ END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS paykeeper_payments_receipt_due ON paykeeper_payments(next_receipt_at)
+ WHERE NOT receipt_done AND receipt_state='waiting';
+-- Платежи, по которым чек уже был найден, сразу считаем сформированными.
+UPDATE paykeeper_payments SET receipt_state='formed' WHERE receipt_done AND receipt_state='waiting';
+-- Платежи, исчерпавшие лимит попыток по прежней логике, больше не опрашиваем.
+UPDATE paykeeper_payments SET receipt_state='missing' WHERE NOT receipt_done AND receipt_state='waiting' AND receipt_attempts>=6;
 CREATE TABLE IF NOT EXISTS paykeeper_unmatched(
  payment_id text PRIMARY KEY,order_id text NOT NULL,client_id text NOT NULL,
  amount bigint NOT NULL CHECK(amount>0),created_at timestamptz NOT NULL DEFAULT now()
 );
+-- Неопознанный платёж тоже проверяем в ОФД: чек ищут по номеру платежа, бронь не нужна.
+ALTER TABLE paykeeper_unmatched ADD COLUMN IF NOT EXISTS receipt_state text NOT NULL DEFAULT 'waiting';
+ALTER TABLE paykeeper_unmatched ADD COLUMN IF NOT EXISTS receipt_url text NOT NULL DEFAULT '';
+ALTER TABLE paykeeper_unmatched ADD COLUMN IF NOT EXISTS receipt_checked_at timestamptz;
+ALTER TABLE paykeeper_unmatched ADD COLUMN IF NOT EXISTS receipt_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE paykeeper_unmatched ADD COLUMN IF NOT EXISTS next_receipt_at timestamptz NOT NULL DEFAULT now();
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='paykeeper_unmatched_receipt_state_check' AND conrelid='paykeeper_unmatched'::regclass) THEN
+  ALTER TABLE paykeeper_unmatched ADD CONSTRAINT paykeeper_unmatched_receipt_state_check
+   CHECK(receipt_state IN ('waiting','formed','missing','failed'));
+ END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS paykeeper_unmatched_receipt_due ON paykeeper_unmatched(next_receipt_at)
+ WHERE receipt_state='waiting';
 CREATE TABLE IF NOT EXISTS paykeeper_settlements(
  booking_id text PRIMARY KEY REFERENCES bookings(id),actor bigint NOT NULL,
  amount bigint NOT NULL CHECK(amount>0),phone text NOT NULL,tax text NOT NULL,

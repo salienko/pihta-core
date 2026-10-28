@@ -8,6 +8,10 @@ from paykeeper import PayKeeper, InvoiceNotSent
 ACCEPTED = 'Пришлём чек отдельным сообщением, как только он будет готов.'
 ACCEPTED_READY = 'Ваш чек доступен по кнопке ниже.'
 RECEIPT_READY = 'Ваш чек сформирован и доступен по кнопке ниже.'
+# Сколько раз автоматически спрашиваем ОФД, прежде чем признать чек несформированным.
+# Интервал растёт: 2, 4, 6, 8, 10, 12 минут — примерно 40 минут на платёж.
+RECEIPT_ATTEMPTS = 6
+RECEIPT_DELAY = 'make_interval(mins=>LEAST(60,2*receipt_attempts+2))'
 
 
 class PayKeeperStore:
@@ -162,37 +166,108 @@ class PayKeeperStore:
         try:return await self.poll_invoice(dict(i))
         except Exception:raise RuleError('Сейчас мы не можем проверить оплату. Повторите проверку позже; бронь сохранена.') from None
 
+    async def receipt_query(self,payment):
+        """Сеть: ищем чек в ОФД по номеру платежа. Ошибка провайдера не раскрывается наружу."""
+        payment=dict(payment)
+        issued_at=await self.pool.fetchval('SELECT created_at FROM paykeeper_invoices WHERE request_id=$1',payment.get('request_id') or '')
+        if issued_at:payment['created_at']=min(payment['created_at'],issued_at)
+        return await self.provider().receipts(payment)
+
+    async def receipt_close(self,db,row,payment,state,error):
+        """Терминальное состояние чека: автоматические опросы ОФД по платежу прекращаются."""
+        await db.execute('UPDATE paykeeper_payments SET receipt_state=$2,receipt_error=$3,receipt_checked_at=now() WHERE payment_id=$1',payment['payment_id'],state,error)
+        text=('⚠️ Чек платежа № '+payment['payment_id']+' не сформирован в кассе. Деньги учтены. Проверьте кассу; перепроверить можно в разделе «Счета и чеки».'
+              if state=='missing' else
+              '⚠️ Не удалось проверить чек платежа № '+payment['payment_id']+' в ОФД. Деньги учтены. Перепроверьте вручную в разделе «Счета и чеки».')
+        await self.enqueue(db,row,'pkreceiptmissing:'+payment['payment_id'],text,self.settings.admin_ids)
+
+    async def check_receipt(self,payment):
+        """Один запрос в ОФД по платежу и запись результата. Возвращает новое состояние чека."""
+        try:receipts=await self.receipt_query(payment)
+        except Exception:receipts=None
+        async with self.tx() as db:
+            i=await db.fetchrow('SELECT * FROM paykeeper_invoices WHERE request_id=$1',payment['request_id'])
+            row=await self.pk_context(db,i)
+            if not receipts:
+                if payment['receipt_attempts']>=RECEIPT_ATTEMPTS:
+                    state='failed' if receipts is None else 'missing'
+                    await self.receipt_close(db,row,payment,state,'receipt_check_failed' if receipts is None else '')
+                    return state
+                await db.execute('UPDATE paykeeper_payments SET receipt_error=$2,receipt_checked_at=now() WHERE payment_id=$1',
+                                 payment['payment_id'],'receipt_check_failed' if receipts is None else '')
+                return 'waiting'
+            for receipt in receipts:
+                previous=await db.fetchval('SELECT payment_id FROM paykeeper_fiscal_receipts WHERE id=$1',receipt['id'])
+                if previous and previous!=payment['payment_id']:raise ValueError('receipt_payment_conflict')
+                inserted=await db.fetchval('INSERT INTO paykeeper_fiscal_receipts(id,payment_id,url) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id',receipt['id'],payment['payment_id'],receipt['url'])
+                if not inserted:continue
+                merged=False
+                if row['id'] and payment['disposition']=='applied':
+                    merged=bool(await db.fetchval("UPDATE outbox SET text=$3 WHERE booking_id=$1 AND recipient=$2 AND event=$4 AND delivered_at IS NULL AND locked_until IS NULL AND attempts=0 RETURNING id",row['id'],row['telegram_id'],payment_confirmation(row)+' '+ACCEPTED_READY,'pkpaid:'+payment['payment_id']))
+                if row['id'] and not merged:
+                    await self.enqueue(db,row,'pkreceipt:'+receipt['id'],RECEIPT_READY,[row['telegram_id']])
+                await self.enqueue(db,row,'pkreceiptadmin:'+receipt['id'],'Чек платежа № '+payment['payment_id']+' сформирован.',self.settings.admin_ids)
+            await db.execute("UPDATE paykeeper_payments SET receipt_done=true,receipt_state='formed',receipt_error='',receipt_checked_at=now() WHERE payment_id=$1",payment['payment_id'])
+        return 'formed'
+
     async def receipt_once(self):
         if not self.settings.paykeeper_enabled:return False
         async with self.tx() as db:
-            p=await db.fetchrow("UPDATE paykeeper_payments SET next_receipt_at=now()+interval '2 minutes',receipt_attempts=receipt_attempts+1 WHERE payment_id=(SELECT payment_id FROM paykeeper_payments WHERE NOT receipt_done AND next_receipt_at<=now() ORDER BY next_receipt_at LIMIT 1 FOR UPDATE) RETURNING *")
+            p=await db.fetchrow("UPDATE paykeeper_payments SET receipt_attempts=receipt_attempts+1,receipt_checked_at=now(),"
+                                "next_receipt_at=now()+"+RECEIPT_DELAY+" "
+                                "WHERE payment_id=(SELECT payment_id FROM paykeeper_payments WHERE NOT receipt_done AND receipt_state='waiting' "
+                                "AND next_receipt_at<=now() ORDER BY next_receipt_at LIMIT 1 FOR UPDATE) RETURNING *")
         if not p:return False
-        payment=dict(p)
-        issued_at=await self.pool.fetchval('SELECT created_at FROM paykeeper_invoices WHERE request_id=$1',p['request_id'])
-        payment['created_at']=min(payment['created_at'],issued_at)
-        try:receipts=await self.provider().receipts(payment)
-        except Exception:receipts=[]
-        async with self.tx() as db:
-            i=await db.fetchrow('SELECT * FROM paykeeper_invoices WHERE request_id=$1',p['request_id'])
-            row=await self.pk_context(db,i)
-            if not receipts:
-                if p['receipt_attempts']>=15:
-                    await self.enqueue(db,row,'pkreceiptdelay:'+p['payment_id'],'⚠️ Чек платежа № '+p['payment_id']+' пока не получен. Нужна проверка кассы; деньги уже учтены.',self.settings.admin_ids)
-                    await db.execute("UPDATE paykeeper_payments SET next_receipt_at=now()+interval '20 minutes' WHERE payment_id=$1",p['payment_id'])
-                return True
-            for receipt in receipts:
-                previous=await db.fetchval('SELECT payment_id FROM paykeeper_fiscal_receipts WHERE id=$1',receipt['id'])
-                if previous and previous!=p['payment_id']:raise ValueError('receipt_payment_conflict')
-                inserted=await db.fetchval('INSERT INTO paykeeper_fiscal_receipts(id,payment_id,url) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id',receipt['id'],p['payment_id'],receipt['url'])
-                if not inserted:continue
-                merged=False
-                if row['id'] and p['disposition']=='applied':
-                    merged=bool(await db.fetchval("UPDATE outbox SET text=$3 WHERE booking_id=$1 AND recipient=$2 AND event=$4 AND delivered_at IS NULL AND locked_until IS NULL AND attempts=0 RETURNING id",row['id'],row['telegram_id'],payment_confirmation(row)+' '+ACCEPTED_READY,'pkpaid:'+p['payment_id']))
-                if row['id'] and not merged:
-                    await self.enqueue(db,row,'pkreceipt:'+receipt['id'],RECEIPT_READY,[row['telegram_id']])
-                await self.enqueue(db,row,'pkreceiptadmin:'+receipt['id'],'Чек платежа № '+p['payment_id']+' сформирован.',self.settings.admin_ids)
-            await db.execute('UPDATE paykeeper_payments SET receipt_done=true WHERE payment_id=$1',p['payment_id'])
+        await self.check_receipt(dict(p))
         return True
+
+    async def recheck_receipt(self,actor,payment_id):
+        """Ручная перепроверка чека из админки: сбрасывает лимит и сразу спрашивает ОФД."""
+        self.admin(actor)
+        if not re.fullmatch(r'[0-9]{1,40}',payment_id):raise RuleError('Проверьте номер платежа.')
+        async with self.tx() as db:
+            p=await db.fetchrow("UPDATE paykeeper_payments SET receipt_state='waiting',receipt_attempts=1,receipt_error='',"
+                                "receipt_checked_at=now(),next_receipt_at=now()+interval '2 minutes' "
+                                "WHERE payment_id=$1 AND NOT receipt_done RETURNING *",payment_id)
+            if not p:raise RuleError('Чек уже получен или платёж не найден.')
+            await self.audit(db,None,actor,'receipt_recheck',dict(payment_id=payment_id))
+        return await self.check_receipt(dict(p))
+
+    async def check_unmatched_receipt(self,payment):
+        """Чек для неопознанного платежа: ищем по номеру платежа, брони у него нет."""
+        try:receipts=await self.receipt_query(dict(payment,request_id=payment['order_id']))
+        except Exception:receipts=None
+        async with self.tx() as db:
+            if receipts:
+                await db.execute("UPDATE paykeeper_unmatched SET receipt_state='formed',receipt_url=$2,receipt_checked_at=now() WHERE payment_id=$1",payment['payment_id'],receipts[0]['url'])
+                return 'formed'
+            if payment['receipt_attempts']<RECEIPT_ATTEMPTS:return 'waiting'
+            state='failed' if receipts is None else 'missing'
+            await db.execute('UPDATE paykeeper_unmatched SET receipt_state=$2,receipt_checked_at=now() WHERE payment_id=$1',payment['payment_id'],state)
+            return state
+
+    async def unmatched_receipt_once(self):
+        if not self.settings.paykeeper_enabled:return False
+        async with self.tx() as db:
+            u=await db.fetchrow("UPDATE paykeeper_unmatched SET receipt_attempts=receipt_attempts+1,receipt_checked_at=now(),"
+                                "next_receipt_at=now()+"+RECEIPT_DELAY+" "
+                                "WHERE payment_id=(SELECT payment_id FROM paykeeper_unmatched WHERE receipt_state='waiting' "
+                                "AND next_receipt_at<=now() ORDER BY next_receipt_at LIMIT 1 FOR UPDATE) RETURNING *")
+        if not u:return False
+        await self.check_unmatched_receipt(dict(u))
+        return True
+
+    async def recheck_unmatched_receipt(self,actor,payment_id):
+        """Ручная перепроверка чека для неопознанного платежа."""
+        self.admin(actor)
+        if not re.fullmatch(r'[0-9]{1,40}',payment_id):raise RuleError('Проверьте номер платежа.')
+        async with self.tx() as db:
+            u=await db.fetchrow("UPDATE paykeeper_unmatched SET receipt_state='waiting',receipt_attempts=1,"
+                                "receipt_checked_at=now(),next_receipt_at=now()+interval '2 minutes' "
+                                "WHERE payment_id=$1 AND receipt_state<>'formed' RETURNING *",payment_id)
+            if not u:raise RuleError('Чек уже найден или платёж не найден.')
+            await self.audit(db,None,actor,'receipt_recheck',dict(payment_id=payment_id,unmatched=True))
+        return await self.check_unmatched_receipt(dict(u))
 
     async def payment_history(self,actor,booking_id,staff=False):
         await self.get(actor,booking_id,staff=staff)
