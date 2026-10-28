@@ -14,6 +14,16 @@ RECEIPT_ATTEMPTS = 6
 RECEIPT_DELAY = 'make_interval(mins=>LEAST(60,2*receipt_attempts+2))'
 
 
+async def next_order_id(db):
+    """Человекочитаемый номер заказа для PayKeeper: P-2026-000042.
+
+    Внутренний request_id остаётся hex-ключом, но гость и кассир видят
+    в счёте понятный номер, а не строку из случайных символов.
+    """
+    return await db.fetchval(
+        "SELECT 'P-'||to_char(now(),'YYYY')||'-'||lpad(nextval('paykeeper_order_seq')::text,6,'0')")
+
+
 class PayKeeperStore:
     def provider(self):
         return PayKeeper(self.settings)
@@ -78,13 +88,13 @@ class PayKeeperStore:
             clock=await self.clock(db);await self.expire(db,clock)
             old=await db.fetchrow('SELECT * FROM paykeeper_payments WHERE payment_id=$1',values['id'])
             if old:
-                if (old['request_id'],old['amount'])!=(values['orderid'],amount):raise ValueError('conflicting_payment')
+                if (old['request_id'],old['amount'])!=((values.get('request_id') or values['orderid']),amount):raise ValueError('conflicting_payment')
                 return False
             old=await db.fetchrow('SELECT * FROM paykeeper_unmatched WHERE payment_id=$1',values['id'])
             if old:
                 if (old['order_id'],old['amount'])!=(values['orderid'],amount):raise ValueError('conflicting_unmatched_payment')
                 return False
-            i=await db.fetchrow('SELECT * FROM paykeeper_invoices WHERE request_id=$1 FOR UPDATE',values['orderid'])
+            i=await db.fetchrow('SELECT * FROM paykeeper_invoices WHERE order_id=$1 OR request_id=$1 FOR UPDATE',values['orderid'])
             if not i:
                 await db.execute('INSERT INTO paykeeper_unmatched(payment_id,order_id,client_id,amount) VALUES($1,$2,$3,$4)',values['id'],values['orderid'],values.get('clientid') or '',amount)
                 await self.enqueue(db,dict(id=None),'pkunmatched:'+values['id'],'⚠️ Платёж № '+values['id']+' на '+rub(amount)+' не связан со счётом бота. Проверьте поступление в платёжном сервисе. Брони не изменены.',self.settings.admin_ids)
@@ -124,7 +134,8 @@ class PayKeeperStore:
         if status=='paid':
             ident=str(result.get('paymentid',''))
             if not re.fullmatch(r'[0-9]{1,40}',ident):raise ValueError('missing_payment_id')
-            await self.accept_paykeeper(dict(id=ident,orderid=i['request_id'],clientid=i['client_id']),i['amount'])
+            await self.accept_paykeeper(dict(id=ident,orderid=i['order_id'] or i['request_id'],
+                                             request_id=i['request_id'],clientid=i['client_id']),i['amount'])
         elif status=='expired':
             async with self.tx() as db:
                 await db.execute("UPDATE paykeeper_invoices SET state='expired' WHERE request_id=$1 AND state='ready'",i['request_id'])
@@ -302,7 +313,8 @@ class PayKeeperStore:
                 if phone!=row['data']['phone']:raise RuleError('Телефон должен совпадать с указанным в брони.')
                 if amount>max(0,total(row)-row['paid']):raise RuleError('Сумма больше остатка по брони.')
                 paid_before=row['paid'];client=row['data']['name']
-            i=await db.fetchrow('INSERT INTO paykeeper_invoices(request_id,booking_id,actor,amount,paid_before,client_id,phone,email,payment_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',request_id,booking_id,actor,amount,paid_before,client,phone,email,payment_type)
+            order_id=await next_order_id(db)
+            i=await db.fetchrow('INSERT INTO paykeeper_invoices(request_id,booking_id,actor,amount,paid_before,client_id,phone,email,payment_type,order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',request_id,booking_id,actor,amount,paid_before,client,phone,email,payment_type,order_id)
             await self.audit(db,booking_id,actor,'staff_invoice_requested',dict(request_id=request_id,amount=amount))
             return dict(i)
 

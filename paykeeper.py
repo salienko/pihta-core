@@ -85,7 +85,7 @@ class PayKeeper:
                    item_type='service',payment_type=row['payment_type'])]
         # clientid (поле «имя/клиент» в счёте PayKeeper) не передаём: оно не нужно,
         # а раньше туда попадал телефон гостя.
-        payload=dict(token=token,pay_amount=amount,orderid=row['request_id'],
+        payload=dict(token=token,pay_amount=amount,orderid=row.get('order_id') or row['request_id'],
                      client_phone=row['phone'],service_name=';PKC|'+json.dumps(cart,ensure_ascii=False)+'|')
         if row.get('email'):payload['client_email']=row['email']
         result=await self.request('/change/invoice/preview/',data=payload)
@@ -97,7 +97,8 @@ class PayKeeper:
     async def invoice_status(self,invoice):
         data=await self.request('/info/invoice/byid/',params={'id':invoice['invoice_id']})
         row=next((r for r in objects(data) if str(r.get('id'))==invoice['invoice_id']),None)
-        if not row or row.get('orderid')!=invoice['request_id'] or kopecks(str(row.get('pay_amount','')))!=invoice['amount']:
+        expected=invoice.get('order_id') or invoice['request_id']
+        if not row or row.get('orderid')!=expected or kopecks(str(row.get('pay_amount','')))!=invoice['amount']:
             raise ProviderError('provider_invoice_mismatch')
         return row
 

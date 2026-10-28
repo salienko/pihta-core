@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS paykeeper_invoices(
  created_at timestamptz NOT NULL DEFAULT now(),started_at timestamptz,
  next_check_at timestamptz NOT NULL DEFAULT now(),last_error text NOT NULL DEFAULT ''
 );
+-- Номер заказа для PayKeeper: человекочитаемый (P-2026-000042) вместо внутреннего
+-- hex-ключа request_id. Внутренний ключ остаётся первичным и не меняется.
+CREATE SEQUENCE IF NOT EXISTS paykeeper_order_seq;
+ALTER TABLE paykeeper_invoices ADD COLUMN IF NOT EXISTS order_id text;
+UPDATE paykeeper_invoices SET order_id=request_id WHERE order_id IS NULL OR order_id='';
+CREATE UNIQUE INDEX IF NOT EXISTS paykeeper_invoices_order_id ON paykeeper_invoices(order_id);
 CREATE INDEX IF NOT EXISTS paykeeper_due ON paykeeper_invoices(next_check_at) WHERE state='ready';
 CREATE TABLE IF NOT EXISTS paykeeper_payments(
  payment_id text PRIMARY KEY,request_id text NOT NULL REFERENCES paykeeper_invoices(request_id),

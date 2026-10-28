@@ -93,3 +93,11 @@ class PaymentNotice(unittest.IsolatedAsyncioTestCase):
         text = await self.store.pool.fetchval("SELECT text FROM outbox WHERE event='pkadmin:123'")
         self.assertIn('Поступила оплата на сумму', text)
         self.assertIn(PHONE, text)
+
+    async def test_order_id_is_readable_and_payment_matches_by_it(self):
+        """В счёте гость видит P-2026-000042, а платёж приходит с этим номером заказа."""
+        order_id = await self.store.pool.fetchval(
+            'SELECT order_id FROM paykeeper_invoices WHERE request_id=$1', self.req['id'])
+        self.assertRegex(order_id, r'^P-\d{4}-\d{6}$')
+        await self.store.accept_paykeeper(dict(id='777', orderid=order_id), 200000)
+        self.assertEqual((await self.store.get(2, self.ident))['paid'], 200000)

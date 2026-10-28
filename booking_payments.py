@@ -42,9 +42,11 @@ class PaymentStore:
             if self.settings.paykeeper_enabled:
                 payment_type=getattr(self.settings,'paykeeper_'+kind+'_type')
                 # счёт выставляется на исправленный телефон, если гость его менял
-                await db.execute('INSERT INTO paykeeper_invoices(request_id,booking_id,actor,amount,paid_before,client_id,phone,payment_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+                # номер заказа в PayKeeper — человекочитаемый, внутренний ключ остаётся request_id
+                order_id=await db.fetchval("SELECT 'P-'||to_char(now(),'YYYY')||'-'||lpad(nextval('paykeeper_order_seq')::text,6,'0')")
+                await db.execute('INSERT INTO paykeeper_invoices(request_id,booking_id,actor,amount,paid_before,client_id,phone,payment_type,order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
                                  request_id,ident,actor,amount,row['paid'],row['data']['name'],
-                                 row.get('contact_phone') or row['data']['phone'],payment_type)
+                                 row.get('contact_phone') or row['data']['phone'],payment_type,order_id)
                 await self.audit(db,ident,actor,'paykeeper_invoice_requested',dict(request_id=request_id,kind=kind,amount=amount))
                 return dict(req),True
             label={'deposit':'предоплата','full':'полная оплата','balance':'доплата остатка'}[kind]
