@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS booking_payment_windows(
 CREATE INDEX IF NOT EXISTS bookings_calendar ON bookings(starts_at,blocked_until);
 CREATE TABLE IF NOT EXISTS audit(id bigserial PRIMARY KEY,booking_id text REFERENCES bookings(id),actor bigint NOT NULL,action text NOT NULL,detail jsonb NOT NULL DEFAULT '{}',created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS outbox(id bigserial PRIMARY KEY,booking_id text NOT NULL REFERENCES bookings(id),recipient bigint NOT NULL,event text NOT NULL,text text NOT NULL,due_at timestamptz NOT NULL DEFAULT now(),attempts integer NOT NULL DEFAULT 0,locked_until timestamptz,delivered_at timestamptz,disabled boolean NOT NULL DEFAULT false,last_error text,UNIQUE(booking_id,recipient,event));
+-- черновик: updated_at нужен, чтобы знать, сколько черновику дней
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+CREATE INDEX IF NOT EXISTS outbox_delivered ON outbox(delivered_at) WHERE delivered_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS audit_created ON audit(created_at);
+CREATE INDEX IF NOT EXISTS drafts_updated ON drafts(updated_at);
 CREATE TABLE IF NOT EXISTS web_tokens(hash text PRIMARY KEY,actor bigint NOT NULL,expires_at timestamptz NOT NULL,used boolean NOT NULL DEFAULT false);
 CREATE TABLE IF NOT EXISTS web_sessions(hash text PRIMARY KEY,actor bigint NOT NULL,csrf text NOT NULL,expires_at timestamptz NOT NULL);
 CREATE TABLE IF NOT EXISTS operations(key text PRIMARY KEY,actor bigint NOT NULL,result text NOT NULL);

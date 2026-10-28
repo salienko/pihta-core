@@ -7,7 +7,7 @@ from aiohttp import web
 
 from booking_store import BookingStore
 from core.app import build_app
-from core.workers import channels_from_env, delivery_loop, payments_loop
+from core.workers import channels_from_env, cleanup_loop, delivery_loop, payments_loop
 from settings import load
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
@@ -33,6 +33,7 @@ async def main():
 
     channels = channels_from_env(settings)
     tasks = [asyncio.create_task(delivery_loop(store, settings, channels))] if channels else []
+    tasks.append(asyncio.create_task(cleanup_loop(store)))
     if settings.paykeeper_enabled:
         tasks.append(asyncio.create_task(payments_loop(store)))
 
