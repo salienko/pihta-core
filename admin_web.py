@@ -23,7 +23,7 @@ def money(value):
     except (InvalidOperation,ValueError,TypeError):raise RuleError('Введите сумму в рублях, не более двух знаков после точки.')
 def rubles(kopecks):return f'{kopecks//100}.{kopecks%100:02}'
 
-ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки','service_price':'Изменена услуга и её цена','rate_price':'Изменён тариф аренды','receipt_recheck':'Перепроверка чека в ОФД'}
+ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки','service_price':'Изменена услуга и её цена','rate_price':'Изменён тариф аренды','receipt_recheck':'Перепроверка чека в ОФД','guest_attach':'Аккаунт привязан к гостю','guest_detach':'Аккаунт отвязан от гостя'}
 # Состояние чека в ОФД. missing и failed — окончательные: опросы ОФД остановлены,
 # ссылка появится только после ручной перепроверки.
 RECEIPT_STATES={'waiting':'чек запрошен у ОФД','formed':'чек получен','missing':'чек не сформирован','failed':'чек не удалось проверить в ОФД'}
@@ -49,7 +49,7 @@ def make_app(store,settings,secure=True):
         return s
     def form(s,action,fields,label='Сохранить',danger=False):
         return f'<form method="post" action="{e(action)}"><input type="hidden" name="csrf" value="{e(s["csrf"])}"><input type="hidden" name="operation" value="{secrets.token_hex(16)}">'+fields+f'<button class="{"danger" if danger else ""}">{e(label)}</button></form>'
-    def navigation(s):return '<nav><a href="/">Заявки и календарь</a><a href="/new-booking">Создать бронь</a><a href="/prices">Цены и услуги</a><a href="/catalog">Праздничные даты</a><a href="/archive">Прежние заявки</a><a href="/audit">Журнал действий</a>'+('<a href="/payments">Счета и чеки</a>' if settings.paykeeper_enabled else '')+'</nav>'+form(s,'/logout','','Выйти')
+    def navigation(s):return '<nav><a href="/">Заявки и календарь</a><a href="/new-booking">Создать бронь</a><a href="/guests">Гости</a><a href="/prices">Цены и услуги</a><a href="/catalog">Праздничные даты</a><a href="/archive">Прежние заявки</a><a href="/audit">Журнал действий</a>'+('<a href="/payments">Счета и чеки</a>' if settings.paykeeper_enabled else '')+'</nav>'+form(s,'/logout','','Выйти')
 
     async def login_page(request):
         body='<div class="card"><h1>Вход администратора</h1><p>Получите личную одноразовую ссылку командой /admin в боте «Пихта».</p><form id="login" action="/login" method="post"><input type="hidden" id="token" name="token"><button id="enter" hidden>Войти</button></form><script src="/login.js" defer></script></div>'
@@ -63,6 +63,56 @@ def make_app(store,settings,secure=True):
         await auth(request,True);token=request.cookies['pihta_session']
         await store.pool.execute('DELETE FROM web_sessions WHERE hash=$1',hashlib.sha256(token.encode()).hexdigest())
         r=web.HTTPFound('/login');r.del_cookie('pihta_session');return r
+
+    async def guest_block(s,guest):
+        """Карточка гостя: аккаунты мессенджеров, привязка и отвязка."""
+        if not guest:
+            return ('<div class="card"><h2>Гость</h2><p class="muted">Эта бронь создана по телефону '
+                    'и не связана с аккаунтом мессенджера.</p></div>')
+        accounts=await store.guest_accounts(guest['id'])
+        body=('<div class="card"><h2>Гость · '+e(guest['name'] or 'Без имени')+'</h2><p>'+e(guest['phone'])+'</p>'
+              '<div class="scroll"><table><tr><th>Мессенджер</th><th>ID аккаунта</th><th>Номер подтверждён</th>'
+              '<th>Последняя активность</th><th></th></tr>')
+        for a in accounts:
+            body+=('<tr><td>'+e(a['platform'])+'</td><td>'+e(a['external_id'])+'</td><td>'+('да' if a['verified'] else 'нет')+'</td><td>'
+                   +e(a['last_seen_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M'))+'</td><td>'
+                   +form(s,'/guest/'+str(guest['id'])+'/detach',
+                         '<input type="hidden" name="platform" value="'+e(a['platform'])+'">'
+                         '<input type="hidden" name="external_id" value="'+e(a['external_id'])+'">','Отвязать',True)+'</td></tr>')
+        if not accounts:body+='<tr><td colspan="5">Аккаунтов пока нет.</td></tr>'
+        body+='</table></div>'
+        body+=form(s,'/guest/'+str(guest['id'])+'/attach',
+                   '<label>Мессенджер<select name="platform"><option value="telegram">Telegram</option>'
+                   '<option value="max">MAX</option></select></label>'
+                   '<label>ID аккаунта<input name="external_id" inputmode="numeric" pattern="[0-9]+" maxlength="19" required></label>',
+                   'Привязать аккаунт')
+        return body+'</div>'
+
+    async def guests(request):
+        s=await auth(request);store.admin(s['actor']);found=await store.guest_list()
+        body=navigation(s)+'<h1>Гости</h1><p>Один гость — один номер. Аккаунты Telegram и MAX живут в одной карточке, брони видны из любого из них.</p>'
+        body+='<div class="card scroll"><table><tr><th>Гость</th><th>Телефон</th><th>Аккаунты</th><th>Обновлён</th></tr>'
+        for g in found:
+            accounts=', '.join(a['platform']+' '+str(a['external_id']) for a in g['accounts']) or '—'
+            body+=('<tr><td><a href="/guest/'+str(g['id'])+'">'+e(g['name'] or 'Без имени')+'</a></td><td>'+e(g['phone'])+'</td><td>'
+                   +e(accounts)+'</td><td>'+e(g['updated_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M'))+'</td></tr>')
+        if not found:body+='<tr><td colspan="4">Гостей пока нет.</td></tr>'
+        return web.Response(text=page('Гости',body+'</table></div>'),content_type='text/html')
+    async def guest_detail(request):
+        s=await auth(request);store.admin(s['actor'])
+        try:guest=await store.guest(request.match_info['id'])
+        except ValueError:raise web.HTTPNotFound() from None
+        if not guest:raise web.HTTPNotFound()
+        body=navigation(s)+'<h1>Гость</h1>'+await guest_block(s,dict(guest))+'<p><a href="/guests">← Все гости</a></p>'
+        return web.Response(text=page('Гость',body),content_type='text/html')
+    async def guest_attach(request):
+        s=await auth(request,True);data=await request.post()
+        await store.attach_account(s['actor'],request.match_info['id'],str(data.get('platform','')),str(data.get('external_id','')))
+        raise web.HTTPFound('/guest/'+request.match_info['id'])
+    async def guest_detach(request):
+        s=await auth(request,True);data=await request.post()
+        await store.detach_account(s['actor'],request.match_info['id'],str(data.get('platform','')),str(data.get('external_id','')))
+        raise web.HTTPFound('/guest/'+request.match_info['id'])
 
     async def home(request):
         s=await auth(request);offset=max(0,int(request.query.get('offset','0')));status_filter=request.query.get('status','pending');status_filter=None if status_filter=='all' else status_filter;rows=await store.listing(s['actor'],staff=True,offset=offset,status_filter=status_filter)
@@ -91,6 +141,8 @@ def make_app(store,settings,secure=True):
     async def detail(request):
         s=await auth(request);r=await store.get(s['actor'],request.match_info['id'],staff=True)
         body=navigation(s)+'<h1>Бронь № '+e(r['id'])+'</h1><div class="card"><pre>'+e(card(r))+'</pre></div>'
+        guest=await store.guest_of_booking(r['id'])
+        body+=await guest_block(s,dict(guest) if guest else None)
         if r['telegram_id'] is None:body+='<div class="notice">Бронь создана по телефону. Ссылку на оплату скопируйте и передайте гостю. Автоматические сообщения Telegram и отмена по таймеру доставки ссылки для этой брони не применяются.</div>'
         if r['status']=='pending':body+='<div class="notice">Бронь подтвердится автоматически после фиксации поступления минимум 2 000 ₽ или всей стоимости. Ссылка и сообщение гостя «Уже оплатил» не являются подтверждением поступления.</div>'
         if r['status'] in ('pending','confirmed'):
@@ -300,7 +352,7 @@ def make_app(store,settings,secure=True):
     from admin_booking import mount_staff_booking
     mount_staff_booking(app,store,auth,form,page,e,navigation)
     app.add_routes([web.get('/payments',payments),web.post('/payments',payment_create),web.post('/payments/{id}/resolve',payment_resolve),web.post('/receipt/{id}/recheck',receipt_recheck),web.get('/payments.js',payment_js)])
-    app.add_routes([web.get('/style.css',style),web.get('/health',health),web.get('/login',login_page),web.get('/login.js',login_js),web.post('/login',login),web.post('/logout',logout),web.get('/',home),web.get('/booking/{id}',detail),web.post('/booking/{id}/{action}',action),web.post('/block',block),web.post('/unblock/{id}',unblock),web.get('/archive',archive),web.get('/audit',audit),web.get('/catalog',catalog),web.post('/holiday',holiday),web.post('/holiday/remove',remove_holiday),web.get('/prices',prices),web.post('/prices/rate/{code}',price_rate),web.post('/prices/service/{code}',price_service)])
+    app.add_routes([web.get('/style.css',style),web.get('/health',health),web.get('/login',login_page),web.get('/login.js',login_js),web.post('/login',login),web.post('/logout',logout),web.get('/',home),web.get('/guests',guests),web.get('/guest/{id}',guest_detail),web.post('/guest/{id}/attach',guest_attach),web.post('/guest/{id}/detach',guest_detach),web.get('/booking/{id}',detail),web.post('/booking/{id}/{action}',action),web.post('/block',block),web.post('/unblock/{id}',unblock),web.get('/archive',archive),web.get('/audit',audit),web.get('/catalog',catalog),web.post('/holiday',holiday),web.post('/holiday/remove',remove_holiday),web.get('/prices',prices),web.post('/prices/rate/{code}',price_rate),web.post('/prices/service/{code}',price_service)])
     return app
 
 def re_full_token(value):

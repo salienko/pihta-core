@@ -56,10 +56,7 @@ async def _payload(request):
 async def _remember(request, actor, platform):
     """Delivery needs to know which channel to push notifications to."""
     try:
-        await request.app['store'].pool.execute(
-            "INSERT INTO actor_platforms(actor, platform, updated_at) VALUES($1,$2,now()) "
-            "ON CONFLICT (actor) DO UPDATE SET platform=EXCLUDED.platform, updated_at=now()",
-            actor, platform)
+        await request.app['store'].touch(actor, platform)
     except Exception:
         log.warning('platform memory failed for %s', actor)
 
@@ -74,6 +71,7 @@ async def _render(result, platform, actor):
 
 async def screen(request):
     payload, actor, platform = await _payload(request)
+    await _remember(request, actor, platform)
     action = payload.get('action') or 'home'
     started = time.monotonic()
     result = await request.app['screens'].dispatch(actor, action)

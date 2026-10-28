@@ -154,7 +154,7 @@ class PayKeeperStore:
             i=await db.fetchrow('SELECT * FROM paykeeper_invoices WHERE request_id=$1 FOR UPDATE',request_id)
             if not i:raise RuleError('Счёт не найден.')
             row=await self.pk_context(db,i)
-            if row.get('telegram_id')!=actor:raise RuleError('Счёт недоступен.')
+            if row.get('telegram_id') is None or not await self.owns(db,actor,row['telegram_id']):raise RuleError('Счёт недоступен.')
             if i['state']=='received':return 'paid'
             if i['state']=='expired':return 'expired'
             if i['state']!='ready':raise RuleError('Ссылка ещё готовится. Администратор уведомлён при ошибке.')

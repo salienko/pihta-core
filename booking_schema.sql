@@ -146,3 +146,48 @@ CREATE TABLE IF NOT EXISTS pending_inputs(
  ref text,
  expires_at timestamptz NOT NULL,
  created_at timestamptz NOT NULL DEFAULT now());
+
+-- Гость — человек, а не аккаунт: телефон уникален и является ключом гостя,
+-- аккаунты Telegram и MAX привязываются к нему отдельными строками.
+CREATE TABLE IF NOT EXISTS guests(
+ id bigserial PRIMARY KEY,
+ phone text NOT NULL UNIQUE,
+ name text NOT NULL DEFAULT '',
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now());
+-- verified: номер подтверждён кнопкой «поделиться контактом» (или миграцией из профиля).
+-- last_seen_at: последнее действие аккаунта; по нему выбирается канал доставки.
+CREATE TABLE IF NOT EXISTS guest_accounts(
+ platform text NOT NULL CHECK(platform IN ('telegram','max')),
+ external_id bigint NOT NULL,
+ guest_id bigint NOT NULL REFERENCES guests(id) ON DELETE CASCADE,
+ verified boolean NOT NULL DEFAULT false,
+ first_seen_at timestamptz NOT NULL DEFAULT now(),
+ last_seen_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(platform,external_id));
+CREATE INDEX IF NOT EXISTS guest_accounts_guest ON guest_accounts(guest_id,last_seen_at DESC);
+
+-- Миграция: профили уже содержат номер, поэтому аккаунт считается подтверждённым.
+-- Уже привязанные аккаунты не трогаем: иначе номер, введённый руками в брони,
+-- создавал бы гостя-призрака при каждом перезапуске.
+INSERT INTO guests(phone,name)
+ SELECT DISTINCT ON (p.phone) p.phone,p.name FROM profiles p
+ WHERE p.phone ~ '^\+7[0-9]{10}$'
+   AND NOT EXISTS(SELECT 1 FROM guest_accounts a WHERE a.platform='telegram' AND a.external_id=p.telegram_id)
+ ORDER BY p.phone,p.telegram_id
+ON CONFLICT(phone) DO NOTHING;
+INSERT INTO guest_accounts(platform,external_id,guest_id,verified)
+ SELECT 'telegram',p.telegram_id,g.id,true FROM profiles p JOIN guests g ON g.phone=p.phone
+ON CONFLICT(platform,external_id) DO NOTHING;
+-- Брони: гость ищется по номеру из снимка, сами брони не переписываются.
+INSERT INTO guests(phone,name)
+ SELECT DISTINCT ON (b.data->>'phone') b.data->>'phone',COALESCE(b.data->>'name','')
+ FROM bookings b
+ WHERE b.telegram_id IS NOT NULL AND b.data->>'phone' ~ '^\+7[0-9]{10}$'
+   AND NOT EXISTS(SELECT 1 FROM guest_accounts a WHERE a.platform='telegram' AND a.external_id=b.telegram_id)
+ ORDER BY b.data->>'phone',b.created_at
+ON CONFLICT(phone) DO NOTHING;
+INSERT INTO guest_accounts(platform,external_id,guest_id,verified)
+ SELECT 'telegram',b.telegram_id,g.id,true FROM bookings b JOIN guests g ON g.phone=b.data->>'phone'
+ WHERE b.telegram_id IS NOT NULL
+ON CONFLICT(platform,external_id) DO NOTHING;

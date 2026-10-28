@@ -28,7 +28,7 @@ class PaymentStore:
         async with self.tx() as db:
             clock=await self.clock(db);await self.expire(db,clock)
             row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1 FOR UPDATE',ident))
-            if not row or row['telegram_id']!=actor:raise RuleError('Бронь недоступна.')
+            if not row or not await self.owns(db,actor,row['telegram_id']):raise RuleError('Бронь недоступна.')
             if row['status'] not in ('pending','confirmed') or row['ends_at']<=clock:raise RuleError('Бронь уже закрыта.')
             due=max(0,total(row)-row['paid'])
             if not due:raise RuleError('Вся стоимость уже внесена.')
@@ -83,7 +83,7 @@ class PaymentStore:
             req=await db.fetchrow('SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE',request_id)
             if not req:raise RuleError('Запрос не найден.')
             row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1 FOR UPDATE',req['booking_id']))
-            if row['telegram_id']!=actor:raise RuleError('Бронь недоступна.')
+            if row['telegram_id'] is None or not await self.owns(db,actor,row['telegram_id']):raise RuleError('Бронь недоступна.')
             if row['status'] not in ('pending','confirmed') or row['paid']!=req['paid_before']:raise RuleError('Проверьте актуальную оплату в карточке брони.')
             if req['state']=='reported':return row['id'],False
             if req['state']!='linked':raise RuleError('Сначала получите актуальную ссылку для оплаты.')
@@ -139,7 +139,7 @@ class PaymentStore:
         async with self.tx() as db:
             clock=await self.clock(db);await self.expire(db,clock)
             row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1 FOR UPDATE',ident))
-            if not row or row['telegram_id']!=actor:raise RuleError('Бронь недоступна.')
+            if not row or not await self.owns(db,actor,row['telegram_id']):raise RuleError('Бронь недоступна.')
             if row['status'] not in ('pending','confirmed'):raise RuleError('Бронь уже закрыта.')
             key='cancelreq:'+ident
             if await db.fetchval('SELECT key FROM operations WHERE key=$1',key):return False

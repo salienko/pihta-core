@@ -9,6 +9,7 @@ from pathlib import Path
 import asyncpg
 from booking_domain import TZ,DEFAULT_RATES,RuleError,estimate,validate_start,can_cancel,card,clean_name,normalize_phone
 from booking_flow import VERSION,require
+from booking_guests import GuestStore
 from booking_payments import PaymentStore,DEPOSIT,total as payment_total
 from paykeeper_store import PayKeeperStore
 from final_receipts import FinalReceiptStore
@@ -94,7 +95,7 @@ def unpack(row):
         if key in d and isinstance(d[key],str):d[key]=json.loads(d[key])
     return d
 
-class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperStore,PaymentStore):
+class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,PayKeeperStore,PaymentStore):
     def __init__(self,settings,pool):self.settings,self.pool=settings,pool
 
     @classmethod
@@ -142,9 +143,9 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
         async with self.tx() as db:
             old=unpack(await db.fetchrow('SELECT * FROM drafts WHERE telegram_id=$1',actor))
             if old and old['state'] not in ('submitted','discarded'):return old['token']
-            token=secrets.token_hex(6);profile=await db.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor)
+            token=secrets.token_hex(6);known=await self.contact_card(db,actor)
             data={'flow_version':VERSION,'guests':1,'children':0,'hours':2,'cart':{}}
-            if profile:data.update(name=profile['name'],phone=profile['phone'])
+            if known:data.update(name=known['name'],phone=known['phone'])
             await db.execute("INSERT INTO drafts(telegram_id,token,state,data,revision,updated_at) VALUES($1,$2,'name',$3::jsonb,0,now()) ON CONFLICT(telegram_id) DO UPDATE SET token=$2,state='name',data=$3::jsonb,revision=drafts.revision+1,updated_at=now()",actor,token,json.dumps(data))
             return token
 
@@ -166,13 +167,17 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
             row=unpack(await db.fetchrow('SELECT * FROM drafts WHERE telegram_id=$1 FOR UPDATE',actor))
             if not row or row['token']!=d['token'] or row['revision']!=d['revision'] or row['state']=='submitted':
                 raise RuleError('Черновик уже изменился. Продолжите с актуального шага.')
-            profile=await db.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor)
+            known=await self.contact_card(db,actor)
             data={'flow_version':VERSION,'guests':1,'children':0,'hours':2,'cart':{}}
-            if profile:data.update(name=profile['name'],phone=profile['phone'])
+            if known:data.update(name=known['name'],phone=known['phone'])
             await db.execute("UPDATE drafts SET token=$1,state='name',data=$2::jsonb,revision=revision+1,updated_at=now() WHERE telegram_id=$3",secrets.token_hex(6),json.dumps(data,ensure_ascii=False),actor)
 
     async def profile(self,actor,name=None,phone=None):
-        if name is None:return unpack(await self.pool.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor))
+        """«Мои данные»: у склеенного гостя имя и номер берём из записи гостя."""
+        if name is None:
+            guest=await self.guest_of(self.pool,actor)
+            if guest:return dict(name=guest['name'],phone=guest['phone'])
+            return unpack(await self.pool.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor))
         await self.pool.execute('INSERT INTO profiles VALUES($1,$2,$3) ON CONFLICT(telegram_id) DO UPDATE SET name=$2,phone=$3',actor,clean_name(name),normalize_phone(phone))
 
     async def seed_prices(self,db):
@@ -267,13 +272,16 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
             catalog,holidays,rates=await self.pricing(db)
             q=estimate(data,catalog,holidays,rates)
             if q!=data.get('quote'):raise RuleError('Расчёт изменился. Проверьте итог и примите правила заново.')
-            rows=await db.fetch("SELECT starts_at FROM bookings WHERE telegram_id=$1 AND status IN ('pending','confirmed') AND ends_at>$2",actor,clock)
+            rows=await db.fetch("SELECT starts_at FROM bookings WHERE telegram_id=ANY($1::bigint[]) AND status IN ('pending','confirmed') AND ends_at>$2",(await self.account_ids(db,actor))[0],clock)
             if len(rows)>=2:raise RuleError('У вас уже две активные брони. Откройте «Мои бронирования».')
             if any(r['starts_at'].astimezone(TZ).date()==start.astimezone(TZ).date() for r in rows):raise RuleError('На эту дату у вас уже есть бронь. Выберите другую дату.')
             if await self.blocked(db,start,end+timedelta(hours=1)):raise RuleError('Это время уже занято. Выберите другой сеанс.')
             ident=secrets.token_hex(5).upper()
             await db.execute("INSERT INTO bookings(id,draft_token,telegram_id,starts_at,ends_at,blocked_until,data,estimate,rules_hash,created_at,status) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,'pending')",ident,token,actor,start,end,end+timedelta(hours=1),json.dumps(data,ensure_ascii=False),json.dumps(q,ensure_ascii=False),self.settings.rules_hash,clock)
             await db.execute('INSERT INTO profiles VALUES($1,$2,$3) ON CONFLICT(telegram_id) DO UPDATE SET name=$2,phone=$3',actor,data['name'],data['phone'])
+            # Имя гостя дополняем, номер не трогаем: он меняется только подтверждением.
+            account=await self.account_of(db,actor)
+            if account:await db.execute("UPDATE guests SET name=CASE WHEN name='' THEN $2 ELSE name END,updated_at=now() WHERE id=$1",account['guest_id'],data['name'])
             await db.execute("UPDATE drafts SET state='submitted',revision=revision+1,updated_at=now() WHERE telegram_id=$1",actor)
             row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',ident))
             await self.audit(db,ident,actor,'submitted');await self.enqueue(db,row,'submitted',card(row))
@@ -286,7 +294,7 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
             r=unpack(await db.fetchrow(
                 'SELECT b.*, c.phone AS contact_phone FROM bookings b '
                 'LEFT JOIN booking_contacts c ON c.booking_id=b.id WHERE b.id=$1',ident))
-            if not r or (not staff and r['telegram_id']!=actor):raise RuleError('Бронь недоступна.')
+            if not r or (not staff and not await self.owns(db,actor,r['telegram_id'])):raise RuleError('Бронь недоступна.')
             # снимок брони неизменяем, поэтому исправленный телефон хранится рядом
             r['contact_phone']=r.get('contact_phone') or r['data'].get('phone','')
             return r
@@ -317,7 +325,9 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
         if status_filter not in (None,'pending','confirmed','cancelled','rejected','expired','completed'):raise RuleError('Выберите статус из списка.')
         async with self.tx() as db:
             clock=await self.clock(db);await self.expire(db,clock)
-            rows=await db.fetch("SELECT * FROM bookings WHERE ($1::boolean OR telegram_id=$2) AND ($3::boolean OR ((status IN ('pending','confirmed')) <> $4::boolean)) AND ($6::text IS NULL OR status=$6) ORDER BY starts_at DESC,id LIMIT 21 OFFSET $5",staff,actor,staff,history,max(0,offset),status_filter)
+            # Брони гостя — по всем его аккаунтам, а не по тому, откуда он пишет сейчас.
+            ids=(await self.account_ids(db,actor))[0] if not staff else [actor]
+            rows=await db.fetch("SELECT * FROM bookings WHERE ($1::boolean OR telegram_id=ANY($2::bigint[])) AND ($3::boolean OR ((status IN ('pending','confirmed')) <> $4::boolean)) AND ($6::text IS NULL OR status=$6) ORDER BY starts_at DESC,id LIMIT 21 OFFSET $5",staff,ids,staff,history,max(0,offset),status_filter)
             return [unpack(r) for r in rows]
 
     async def legacy(self,actor,ident=None):
@@ -330,7 +340,7 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
         async with self.tx() as db:
             clock=await self.clock(db,clock);await self.expire(db,clock)
             row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1 FOR UPDATE',ident))
-            if not row or (not staff and row['telegram_id']!=actor):raise RuleError('Бронь недоступна.')
+            if not row or (not staff and not await self.owns(db,actor,row['telegram_id'])):raise RuleError('Бронь недоступна.')
             if action not in ('confirm','reject','cancel'):raise RuleError('Неизвестное действие.')
             target={'confirm':'confirmed','reject':'rejected','cancel':'cancelled'}[action]
             if row['status']==target:return
