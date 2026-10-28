@@ -83,7 +83,9 @@ class PayKeeper:
         amount=f'{row["amount"]//100}.{row["amount"]%100:02}'
         cart=[dict(name=ITEM_NAME,price=amount,quantity=1,sum=amount,tax=s.paykeeper_tax,
                    item_type='service',payment_type=row['payment_type'])]
-        payload=dict(token=token,pay_amount=amount,clientid=row['client_id'],orderid=row['request_id'],
+        # clientid (поле «имя/клиент» в счёте PayKeeper) не передаём: оно не нужно,
+        # а раньше туда попадал телефон гостя.
+        payload=dict(token=token,pay_amount=amount,orderid=row['request_id'],
                      client_phone=row['phone'],service_name=';PKC|'+json.dumps(cart,ensure_ascii=False)+'|')
         if row.get('email'):payload['client_email']=row['email']
         result=await self.request('/change/invoice/preview/',data=payload)
@@ -95,7 +97,7 @@ class PayKeeper:
     async def invoice_status(self,invoice):
         data=await self.request('/info/invoice/byid/',params={'id':invoice['invoice_id']})
         row=next((r for r in objects(data) if str(r.get('id'))==invoice['invoice_id']),None)
-        if not row or row.get('orderid')!=invoice['request_id'] or str(row.get('clientid'))!=invoice['client_id'] or kopecks(str(row.get('pay_amount','')))!=invoice['amount']:
+        if not row or row.get('orderid')!=invoice['request_id'] or kopecks(str(row.get('pay_amount','')))!=invoice['amount']:
             raise ProviderError('provider_invoice_mismatch')
         return row
 

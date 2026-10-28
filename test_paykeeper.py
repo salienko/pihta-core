@@ -66,6 +66,7 @@ class Provider(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cart[0]['payment_type'],'part_prepay')
         self.assertEqual(payload['client_phone'],'+79810000000')
         self.assertNotIn('client_email',payload)
+        self.assertNotIn('clientid',payload)
         self.assertEqual(url,'https://paykeeper.example/bill/1001/')
 
     async def test_receipts_match_payment_amount_and_sale(self):
@@ -136,12 +137,16 @@ class Payments(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.pool.fetchval('SELECT count(*) FROM paykeeper_payments'),1)
         self.assertEqual(await self.store.pool.fetchval("SELECT count(*) FROM outbox WHERE event='pkpaid:123'"),1)
 
-    async def test_wrong_amount_client_order_and_conflicting_replay(self):
+    async def test_wrong_amount_and_conflicting_replay(self):
         await self.linked()
-        for values,amount in [(dict(id='123',orderid=self.req['id'],clientid='other'),200000),(dict(id='123',orderid=self.req['id'],clientid='Гость'),10000)]:
-            with self.assertRaises(ValueError):await self.store.accept_paykeeper(values,amount)
+        with self.assertRaises(ValueError):await self.store.accept_paykeeper(dict(id='123',orderid=self.req['id'],clientid='Гость'),10000)
         await self.accept()
         with self.assertRaises(ValueError):await self.store.accept_paykeeper(dict(id='123',orderid=self.req['id'],clientid='Гость'),10000)
+        self.assertEqual((await self.store.get(2,self.ident))['paid'],200000)
+
+    async def test_payment_without_clientid_is_accepted(self):
+        await self.linked()
+        await self.store.accept_paykeeper(dict(id='123',orderid=self.req['id']),200000)
         self.assertEqual((await self.store.get(2,self.ident))['paid'],200000)
 
     async def test_unknown_merchant_payment_is_recorded_without_credit_or_retry_loop(self):

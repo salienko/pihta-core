@@ -74,18 +74,19 @@ class PayKeeperStore:
             clock=await self.clock(db);await self.expire(db,clock)
             old=await db.fetchrow('SELECT * FROM paykeeper_payments WHERE payment_id=$1',values['id'])
             if old:
-                if (old['request_id'],old['client_id'],old['amount'])!=(values['orderid'],values['clientid'],amount):raise ValueError('conflicting_payment')
+                if (old['request_id'],old['amount'])!=(values['orderid'],amount):raise ValueError('conflicting_payment')
                 return False
             old=await db.fetchrow('SELECT * FROM paykeeper_unmatched WHERE payment_id=$1',values['id'])
             if old:
-                if (old['order_id'],old['client_id'],old['amount'])!=(values['orderid'],values['clientid'],amount):raise ValueError('conflicting_unmatched_payment')
+                if (old['order_id'],old['amount'])!=(values['orderid'],amount):raise ValueError('conflicting_unmatched_payment')
                 return False
             i=await db.fetchrow('SELECT * FROM paykeeper_invoices WHERE request_id=$1 FOR UPDATE',values['orderid'])
             if not i:
-                await db.execute('INSERT INTO paykeeper_unmatched(payment_id,order_id,client_id,amount) VALUES($1,$2,$3,$4)',values['id'],values['orderid'],values['clientid'],amount)
+                await db.execute('INSERT INTO paykeeper_unmatched(payment_id,order_id,client_id,amount) VALUES($1,$2,$3,$4)',values['id'],values['orderid'],values.get('clientid') or '',amount)
                 await self.enqueue(db,dict(id=None),'pkunmatched:'+values['id'],'⚠️ Платёж № '+values['id']+' на '+rub(amount)+' не связан со счётом бота. Проверьте поступление в платёжном сервисе. Брони не изменены.',self.settings.admin_ids)
                 return False
-            if i['client_id']!=values['clientid'] or i['amount']!=amount:raise ValueError('invoice_mismatch')
+            # clientid больше не выставляется в счёте, поэтому платёж сверяем по номеру заказа и сумме.
+            if i['amount']!=amount:raise ValueError('invoice_mismatch')
             row=await self.pk_context(db,i)
             prior=await db.fetchval('SELECT EXISTS(SELECT 1 FROM paykeeper_payments WHERE request_id=$1)',i['request_id'])
             req=await db.fetchrow('SELECT * FROM payment_requests WHERE id=$1 FOR UPDATE',i['request_id'])
@@ -93,7 +94,7 @@ class PayKeeperStore:
                        and row['paid']==i['paid_before'] and row['paid']+amount<=total(row)
                        and (not req or req['state'] in ('requested','linked','reported')))
             disposition='applied' if apply else 'standalone' if not row['id'] and not prior else 'review'
-            await db.execute('INSERT INTO paykeeper_payments(payment_id,request_id,client_id,amount,disposition) VALUES($1,$2,$3,$4,$5)',values['id'],i['request_id'],values['clientid'],amount,disposition)
+            await db.execute('INSERT INTO paykeeper_payments(payment_id,request_id,client_id,amount,disposition) VALUES($1,$2,$3,$4,$5)',values['id'],i['request_id'],values.get('clientid') or '',amount,disposition)
             await db.execute("UPDATE paykeeper_invoices SET state='received' WHERE request_id=$1",i['request_id'])
             if apply:
                 paid=row['paid']+amount;status='confirmed' if paid>=min(DEPOSIT,total(row)) else row['status']
@@ -104,8 +105,11 @@ class PayKeeperStore:
                 await self.enqueue(db,row,'pkpaid:'+values['id'],payment_confirmation(updated)+' '+ACCEPTED,[row['telegram_id']])
             elif row['id']:
                 await self.enqueue(db,row,'pkreviewguest:'+values['id'],'Ваша оплата принята. Спасибо. Администратор проверит её привязку к брони. Повторно оплачивать не нужно.',[row['telegram_id']])
-            text=('✅ Оплата '+rub(amount)+' получена. ' if disposition!='review' else '⚠️ Платёж '+rub(amount)+' получен, нужна сверка. ')
-            text+='Платёж № '+values['id']+', запрос '+i['request_id']+'.'
+            where='Бронь № '+row['id']+'. ' if row['id'] else ''
+            text=('💰 Поступила оплата на сумму '+rub(amount)+', телефон '+i['phone']+'. '
+                  if disposition!='review' else
+                  '⚠️ Поступила оплата на сумму '+rub(amount)+', телефон '+i['phone']+', нужна сверка. ')
+            text+=where+'Платёж № '+values['id']+', запрос '+i['request_id']+'.'
             await self.enqueue(db,row,'pkadmin:'+values['id'],text,self.settings.admin_ids)
             await self.audit(db,row['id'],0,'paykeeper_payment',dict(payment_id=values['id'],request_id=i['request_id'],amount=amount,disposition=disposition))
             return True
@@ -215,7 +219,7 @@ class PayKeeperStore:
             if old:
                 if (old['actor'],old['booking_id'],old['amount'],old['phone'],old['email'],old['payment_type'])!=(actor,booking_id,amount,phone,email,payment_type):raise RuleError('Эта форма уже использована с другими данными. Обновите страницу.')
                 return dict(old)
-            paid_before=0;client=phone
+            paid_before=0;client=''
             if booking_id:
                 from booking_store import unpack
                 row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',booking_id))
