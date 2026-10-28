@@ -5,8 +5,6 @@ from booking_domain import RuleError, rub, normalize_phone,payment_confirmation
 from booking_payments import DEPOSIT, total
 from paykeeper import PayKeeper, InvoiceNotSent
 
-ACCEPTED = 'Пришлём чек отдельным сообщением, как только он будет готов.'
-ACCEPTED_READY = 'Ваш чек доступен по кнопке ниже.'
 RECEIPT_READY = 'Ваш чек сформирован и доступен по кнопке ниже.'
 # Сколько раз автоматически спрашиваем ОФД, прежде чем признать чек несформированным.
 # Интервал растёт: 2, 4, 6, 8, 10, 12 минут — примерно 40 минут на платёж.
@@ -115,8 +113,8 @@ class PayKeeperStore:
                 await db.execute('UPDATE bookings SET paid=$2,status=$3,revision=revision+1 WHERE id=$1',row['id'],paid,status)
                 await db.execute("UPDATE payment_requests SET state=CASE WHEN id=$2 THEN 'paid' ELSE 'superseded' END,revision=revision+1 WHERE booking_id=$1 AND state IN ('requested','linked','reported')",row['id'],i['request_id'])
                 await db.execute("UPDATE outbox SET disabled=true WHERE booking_id=$1 AND delivered_at IS NULL AND (event LIKE 'payreq:%' OR event LIKE 'paylink:%' OR event LIKE 'payreported:%' OR event LIKE 'reminder:pending:%')",row['id'])
-                updated=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',row['id']))
-                await self.enqueue(db,row,'pkpaid:'+values['id'],payment_confirmation(updated)+' '+ACCEPTED,[row['telegram_id']])
+                # Гостю про оплату пишем не сейчас, а когда сформируется чек —
+                # в том сообщении будет ссылка на чек.
             elif row['id']:
                 await self.enqueue(db,row,'pkreviewguest:'+values['id'],'Ваша оплата принята. Спасибо. Администратор проверит её привязку к брони. Повторно оплачивать не нужно.',[row['telegram_id']])
             where='Бронь № '+row['id']+'. ' if row['id'] else ''
@@ -191,6 +189,35 @@ class PayKeeperStore:
               if state=='missing' else
               '⚠️ Не удалось проверить чек платежа № '+payment['payment_id']+' в ОФД. Деньги учтены. Перепроверьте вручную в разделе «Счета и чеки».')
         await self.enqueue(db,row,'pkreceiptmissing:'+payment['payment_id'],text,self.settings.admin_ids)
+        # Гость не должен остаться без ответа, даже если чек так и не появился.
+        invoice=await db.fetchrow('SELECT * FROM paykeeper_invoices WHERE request_id=$1',payment['request_id'])
+        recipients=await self.guest_recipients(db,invoice,row)
+        if recipients:
+            await self.enqueue(db,row,'pkreceiptpending:'+payment['payment_id'],
+                               'Оплата принята: '+rub(payment['amount'])+'. Чек пока не сформирован — администратор уже проверяет кассу, чек пришлём отдельным сообщением.',
+                               recipients)
+
+    async def guest_recipients(self,db,invoice,row):
+        """Кому из гостей писать про чек.
+
+        Для счёта по брони — аккаунт брони; для счёта из админки без брони —
+        аккаунт гостя с телефоном из счёта (последний активный мессенджер).
+        """
+        if row['id']:
+            return [row['telegram_id']]
+        if not invoice:
+            return []
+        account=await db.fetchrow('SELECT a.external_id FROM guest_accounts a '
+                                  'JOIN guests g ON g.id=a.guest_id WHERE g.phone=$1 '
+                                  'ORDER BY a.last_seen_at DESC LIMIT 1',invoice['phone'])
+        if account:
+            return [account['external_id']]
+        # Гость мог ещё не попасть в guests: ищем его по профилю или прошлой брони.
+        who=await db.fetchval('SELECT telegram_id FROM profiles WHERE phone=$1',invoice['phone'])
+        if not who:
+            who=await db.fetchval("SELECT telegram_id FROM bookings WHERE data->>'phone'=$1 "
+                                  "ORDER BY starts_at DESC LIMIT 1",invoice['phone'])
+        return [who] if who else []
 
     async def check_receipt(self,payment):
         """Один запрос в ОФД по платежу и запись результата. Возвращает новое состояние чека."""
@@ -212,11 +239,12 @@ class PayKeeperStore:
                 if previous and previous!=payment['payment_id']:raise ValueError('receipt_payment_conflict')
                 inserted=await db.fetchval('INSERT INTO paykeeper_fiscal_receipts(id,payment_id,url) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id',receipt['id'],payment['payment_id'],receipt['url'])
                 if not inserted:continue
-                merged=False
-                if row['id'] and payment['disposition']=='applied':
-                    merged=bool(await db.fetchval("UPDATE outbox SET text=$3 WHERE booking_id=$1 AND recipient=$2 AND event=$4 AND delivered_at IS NULL AND locked_until IS NULL AND attempts=0 RETURNING id",row['id'],row['telegram_id'],payment_confirmation(row)+' '+ACCEPTED_READY,'pkpaid:'+payment['payment_id']))
-                if row['id'] and not merged:
-                    await self.enqueue(db,row,'pkreceipt:'+receipt['id'],RECEIPT_READY,[row['telegram_id']])
+                # Гостю — одно сообщение: оплата принята и сразу ссылка на чек.
+                text=(payment_confirmation(row)+' Бронь № '+row['id']+'. '+RECEIPT_READY if row['id']
+                      else 'Оплата принята: '+rub(payment['amount'])+'. '+RECEIPT_READY)
+                recipients=await self.guest_recipients(db,i,row)
+                if recipients:
+                    await self.enqueue(db,row,'pkreceipt:'+receipt['id'],text,recipients)
                 await self.enqueue(db,row,'pkreceiptadmin:'+receipt['id'],'Чек платежа № '+payment['payment_id']+' сформирован.',self.settings.admin_ids)
             await db.execute("UPDATE paykeeper_payments SET receipt_done=true,receipt_state='formed',receipt_error='',receipt_checked_at=now() WHERE payment_id=$1",payment['payment_id'])
         return 'formed'

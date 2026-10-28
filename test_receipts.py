@@ -6,7 +6,9 @@
 3. ошибка ОФД → failed, тоже без бесконечных опросов;
 4. ручная перепроверка из админки снова спрашивает ОФД;
 5. в админке видно «чек не сформирован», а не «Чек формируется»;
-6. чек ищется и для неопознанных платежей.
+6. чек ищется и для неопознанных платежей;
+7. админ узнаёт об оплате сразу, гость — вместе с чеком и ссылкой
+   (в том числе по счёту из админки, где брони нет).
 """
 import hashlib
 import os
@@ -252,3 +254,38 @@ class ReceiptAdmin(Setup):
         self.assertIn('7777', body)
         self.assertIn(PHONE, body)
         self.assertIn('rc_id=1725', body)
+
+
+@unittest.skipUnless(URL, 'TEST_DATABASE_URL required')
+class PaymentNotifications(Setup):
+    async def test_admin_is_notified_at_once_and_guest_only_with_the_receipt(self):
+        """Админ узнаёт об оплате сразу, гость — когда готов чек, со ссылкой."""
+        self.assertTrue(await self.store.pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM outbox WHERE event='pkadmin:" + PAYMENT + "')"))
+        self.assertFalse(await self.store.pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM outbox WHERE event LIKE 'pkpaid:%')"))
+        self.provider.receipts.return_value = [RECEIPT]
+        await self.store.receipt_once()
+        row = await self.store.pool.fetchrow(
+            "SELECT text FROM outbox WHERE event='pkreceipt:1725' AND recipient=2")
+        self.assertIsNotNone(row)
+        self.assertIn('Ваш чек сформирован', row['text'])
+        self.assertIn(self.ident, row['text'])
+
+    async def test_staff_invoice_notifies_guest_by_phone(self):
+        """Счёт из админки без брони: чек уходит гостю с телефоном из счёта."""
+        invoice = await self.store.create_staff_invoice(1, secrets.token_hex(16), PHONE, 199900, 'full')
+        self.assertRegex(invoice['order_id'], r'^P-\d{4}-\d{6}$')
+        await self.store.accept_paykeeper(dict(id='5551', orderid=invoice['order_id']), 199900)
+        self.assertTrue(await self.store.pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM outbox WHERE event='pkadmin:5551')"))
+        await self.store.pool.execute(
+            "UPDATE paykeeper_payments SET next_receipt_at=now()+interval '1 day' WHERE payment_id=$1", PAYMENT)
+        await self.store.pool.execute(
+            "UPDATE paykeeper_payments SET next_receipt_at=now() WHERE payment_id='5551'")
+        self.provider.receipts.return_value = [dict(id='1800', url='https://paykeeper.example/r/1800/')]
+        await self.store.receipt_once()
+        row = await self.store.pool.fetchrow("SELECT text,recipient FROM outbox WHERE event='pkreceipt:1800'")
+        self.assertIsNotNone(row)
+        self.assertEqual(row['recipient'], 2)
+        self.assertIn('Оплата принята', row['text'])
