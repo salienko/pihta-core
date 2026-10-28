@@ -94,4 +94,4 @@ Telegram- и MAX-боты — тонкие транспорты: получаю�
   понятным сообщением гостю.
 - Идентичность: `(platform, external_user_id)`; нельзя склеивать
   Telegram-ID и MAX-ID по числу. В API платформа передаётся явно, в схеме
-  для этого есть `migrations_002_platform_routing.sql`.
+  для этого есть таблица `actor_platforms`.

@@ -4,12 +4,15 @@ from decimal import Decimal,InvalidOperation
 import hashlib
 import hmac
 from html import escape
+import os
 import secrets
 from aiohttp import web
 from booking_domain import TZ,RuleError,LABELS,card,rub
 
 STYLE='''*{box-sizing:border-box}body{margin:0;background:#eff3ee;color:#213b2d;font:16px system-ui,sans-serif}header{background:#203d2e;color:white;padding:22px max(5vw,18px)}main{max-width:1100px;margin:auto;padding:24px 18px}h1{font-size:28px}h2{font-size:21px}a{color:#246448}header a{color:white;margin-right:20px}.card{padding:22px;background:white;border-radius:16px;margin:16px 0;box-shadow:0 2px 7px #1a39200b}pre{white-space:pre-wrap;font:inherit;line-height:1.65}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}input,select,textarea,button{font:inherit;padding:12px;border:1px solid #cbd6cc;border-radius:9px;max-width:100%}label{display:block;margin:12px 0}input,select,textarea{display:block;width:100%;margin-top:5px}button{background:#2c6145;color:white;cursor:pointer}button.danger{background:#864735}small,.muted{color:#617568}.badge{display:inline-block;background:#e7efe7;padding:5px 10px;border-radius:20px}table{width:100%;border-collapse:collapse}td,th{padding:12px 8px;text-align:left;border-bottom:1px solid #e4ebe4}.scroll{overflow:auto}nav{display:flex;gap:20px;flex-wrap:wrap}.notice{padding:16px;background:#fff4d6;border-radius:12px}.inline{display:inline}header form button{padding:6px 15px;background:transparent}.button{display:inline-block;background:#2c6145;color:white;text-decoration:none;padding:12px;border-radius:9px}'''
 def e(v):return escape(str(v),quote=True)
+def release_label() -> str:
+    return os.getenv('RELEASE') or os.getenv('CORE_RELEASE') or 'dev'
 def page(title,body):return '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+e(title)+' · Пихта</title><link rel="stylesheet" href="/style.css"><header><strong>ПИХТА · Управление</strong></header><main>'+body+'</main></html>'
 def money(value):
     try:
@@ -168,7 +171,7 @@ def make_app(store,settings,secure=True):
     async def health(request):
         try:await store.pool.fetchval('SELECT 1')
         except Exception:return web.json_response({'status':'unavailable'},status=503)
-        return web.json_response({'status':'ok','release':'rental-v3'})
+        return web.json_response({'status':'ok','release':release_label()})
     async def catalog(request):
         s=await auth(request);items,holidays=await store.pricing();body=navigation(s)+'<h1>Тарифы и праздничные даты</h1><p>Пн–пт до 19:00: 5 000 ₽ за 2 часа. Вечером и в выходные: 6 000 ₽. Ниже задаются особые даты. Изменения относятся только к новым бронированиям.</p>'
         body+='<div class="card"><h2>Праздничный тариф</h2><p>Укажите каждую дату отдельно. Новогодняя цена задаётся явно.</p>'+form(s,'/holiday','<label>Дата<input name="day" type="date" required></label><label>Название<input name="label" maxlength="80" required></label><label>Первые 2 часа, ₽<input name="base" type="number" min="1" step="1" value="6500" required></label><label>Следующий час, ₽<input name="extra" type="number" min="1" step="1" value="3000" required></label>','Сохранить тариф')+'</div>'
