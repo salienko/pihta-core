@@ -14,8 +14,8 @@ class StaffBookingStore:
         validate_start(start,clock)
         if type(guests) is not int or type(children) is not int:raise RuleError('Укажите число гостей и детей.')
         data=dict(name=clean_name(name.strip()) if name.strip() else 'Гость',phone=normalize_phone(phone),guests=guests,children=children,hours=2,start=start.isoformat(),day=start.astimezone(TZ).date().isoformat(),cart={},guest_min_paid_age=8,source='staff',consent=False)
-        catalog,holidays=await self.pricing(db)
-        return data,estimate(data,catalog,holidays)
+        catalog,holidays,rates=await self.pricing(db)
+        return data,estimate(data,catalog,holidays,rates)
 
     async def create_staff_booking(self,actor,key,start,phone,guests,children=0,name='',expected_total=None):
         self.admin(actor)

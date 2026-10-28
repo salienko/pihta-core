@@ -26,7 +26,20 @@ CREATE INDEX IF NOT EXISTS drafts_updated ON drafts(updated_at);
 CREATE TABLE IF NOT EXISTS web_tokens(hash text PRIMARY KEY,actor bigint NOT NULL,expires_at timestamptz NOT NULL,used boolean NOT NULL DEFAULT false);
 CREATE TABLE IF NOT EXISTS web_sessions(hash text PRIMARY KEY,actor bigint NOT NULL,csrf text NOT NULL,expires_at timestamptz NOT NULL);
 CREATE TABLE IF NOT EXISTS operations(key text PRIMARY KEY,actor bigint NOT NULL,result text NOT NULL);
-CREATE TABLE IF NOT EXISTS service_settings(code text PRIMARY KEY,available boolean NOT NULL);
+-- Цены и доступность услуг живут в БД: поднять цену можно из админки, без пересборки.
+-- name/price заполняются сидом из content.json при первом запуске (booking_store.seed_prices).
+CREATE TABLE IF NOT EXISTS service_settings(code text PRIMARY KEY,available boolean NOT NULL DEFAULT true);
+ALTER TABLE service_settings ALTER COLUMN available SET DEFAULT true;
+ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS name text;
+ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS price bigint CHECK(price IS NULL OR price>0);
+ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS unit text NOT NULL DEFAULT 'шт.';
+ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 0;
+ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+-- Тарифы аренды: будни днём, вечер и выходные, доплата за гостя сверх четырёх
+CREATE TABLE IF NOT EXISTS price_settings(
+ code text PRIMARY KEY,
+ amount bigint NOT NULL CHECK(amount>0),
+ updated_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS holiday_rates(day date PRIMARY KEY,label text NOT NULL,base bigint NOT NULL CHECK(base>0 AND base%2=0),extra bigint NOT NULL CHECK(extra>0));
 CREATE TABLE IF NOT EXISTS calendar_blocks(id bigserial PRIMARY KEY,starts_at timestamptz NOT NULL,ends_at timestamptz NOT NULL,reason text NOT NULL,actor bigint NOT NULL,active boolean NOT NULL DEFAULT true,CHECK(ends_at>starts_at));
 CREATE TABLE IF NOT EXISTS payment_requests(

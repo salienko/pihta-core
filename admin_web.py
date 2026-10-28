@@ -7,7 +7,7 @@ from html import escape
 import os
 import secrets
 from aiohttp import web
-from booking_domain import TZ,RuleError,LABELS,card,rub
+from booking_domain import TZ,RATE_LABELS,RuleError,LABELS,card,rub
 
 STYLE='''*{box-sizing:border-box}body{margin:0;background:#eff3ee;color:#213b2d;font:16px system-ui,sans-serif}header{background:#203d2e;color:white;padding:22px max(5vw,18px)}main{max-width:1100px;margin:auto;padding:24px 18px}h1{font-size:28px}h2{font-size:21px}a{color:#246448}header a{color:white;margin-right:20px}.card{padding:22px;background:white;border-radius:16px;margin:16px 0;box-shadow:0 2px 7px #1a39200b}pre{white-space:pre-wrap;font:inherit;line-height:1.65}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}input,select,textarea,button{font:inherit;padding:12px;border:1px solid #cbd6cc;border-radius:9px;max-width:100%}label{display:block;margin:12px 0}input,select,textarea{display:block;width:100%;margin-top:5px}button{background:#2c6145;color:white;cursor:pointer}button.danger{background:#864735}small,.muted{color:#617568}.badge{display:inline-block;background:#e7efe7;padding:5px 10px;border-radius:20px}table{width:100%;border-collapse:collapse}td,th{padding:12px 8px;text-align:left;border-bottom:1px solid #e4ebe4}.scroll{overflow:auto}nav{display:flex;gap:20px;flex-wrap:wrap}.notice{padding:16px;background:#fff4d6;border-radius:12px}.inline{display:inline}header form button{padding:6px 15px;background:transparent}.button{display:inline-block;background:#2c6145;color:white;text-decoration:none;padding:12px;border-radius:9px}'''
 def e(v):return escape(str(v),quote=True)
@@ -20,8 +20,9 @@ def money(value):
         if amount!=amount.to_integral_value() or not amount.is_finite() or amount<0 or amount>100000000:raise ValueError()
         return int(amount)
     except (InvalidOperation,ValueError,TypeError):raise RuleError('Введите сумму в рублях, не более двух знаков после точки.')
+def rubles(kopecks):return f'{kopecks//100}.{kopecks%100:02}'
 
-ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки'}
+ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки','service_price':'Изменена услуга и её цена','rate_price':'Изменён тариф аренды'}
 
 def make_app(store,settings,secure=True):
     @web.middleware
@@ -44,7 +45,7 @@ def make_app(store,settings,secure=True):
         return s
     def form(s,action,fields,label='Сохранить',danger=False):
         return f'<form method="post" action="{e(action)}"><input type="hidden" name="csrf" value="{e(s["csrf"])}"><input type="hidden" name="operation" value="{secrets.token_hex(16)}">'+fields+f'<button class="{"danger" if danger else ""}">{e(label)}</button></form>'
-    def navigation(s):return '<nav><a href="/">Заявки и календарь</a><a href="/new-booking">Создать бронь</a><a href="/catalog">Тарифы и праздники</a><a href="/archive">Прежние заявки</a><a href="/audit">Журнал действий</a>'+('<a href="/payments">Счета и чеки</a>' if settings.paykeeper_enabled else '')+'</nav>'+form(s,'/logout','','Выйти')
+    def navigation(s):return '<nav><a href="/">Заявки и календарь</a><a href="/new-booking">Создать бронь</a><a href="/prices">Цены и услуги</a><a href="/catalog">Праздничные даты</a><a href="/archive">Прежние заявки</a><a href="/audit">Журнал действий</a>'+('<a href="/payments">Счета и чеки</a>' if settings.paykeeper_enabled else '')+'</nav>'+form(s,'/logout','','Выйти')
 
     async def login_page(request):
         body='<div class="card"><h1>Вход администратора</h1><p>Получите личную одноразовую ссылку командой /admin в боте «Пихта».</p><form id="login" action="/login" method="post"><input type="hidden" id="token" name="token"><button id="enter" hidden>Войти</button></form><script src="/login.js" defer></script></div>'
@@ -173,7 +174,7 @@ def make_app(store,settings,secure=True):
         except Exception:return web.json_response({'status':'unavailable'},status=503)
         return web.json_response({'status':'ok','release':release_label()})
     async def catalog(request):
-        s=await auth(request);items,holidays=await store.pricing();body=navigation(s)+'<h1>Тарифы и праздничные даты</h1><p>Пн–пт до 19:00: 5 000 ₽ за 2 часа. Вечером и в выходные: 6 000 ₽. Ниже задаются особые даты. Изменения относятся только к новым бронированиям.</p>'
+        s=await auth(request);items,holidays,rates=await store.pricing();body=navigation(s)+'<h1>Праздничные даты</h1><p>Будни днём — '+e(rub(rates['rent_weekday']))+' за 2 часа. Вечером и в выходные — '+e(rub(rates['rent_weekend']))+'. Тарифы меняются в разделе <a href="/prices">«Цены и услуги»</a>. Ниже задаются особые даты. Изменения относятся только к новым бронированиям.</p>'
         body+='<div class="card"><h2>Праздничный тариф</h2><p>Укажите каждую дату отдельно. Новогодняя цена задаётся явно.</p>'+form(s,'/holiday','<label>Дата<input name="day" type="date" required></label><label>Название<input name="label" maxlength="80" required></label><label>Первые 2 часа, ₽<input name="base" type="number" min="1" step="1" value="6500" required></label><label>Следующий час, ₽<input name="extra" type="number" min="1" step="1" value="3000" required></label>','Сохранить тариф')+'</div>'
         for day,rate in sorted(holidays.items()):body+='<div class="card"><p>'+e(day)+' · '+e(rate['label'])+' · '+e(rub(rate['base']))+' / '+e(rub(rate['extra']))+'</p>'+form(s,'/holiday/remove','<input type="hidden" name="day" value="'+e(day)+'">','Убрать особый тариф')+'</div>'
         return web.Response(text=page('Каталог',body),content_type='text/html')
@@ -193,6 +194,32 @@ def make_app(store,settings,secure=True):
             await db.execute('DELETE FROM holiday_rates WHERE day=$1',day)
             await store.audit(db,None,s['actor'],'holiday_removed',dict(day=day.isoformat()))
         raise web.HTTPFound('/catalog')
+
+    async def prices(request):
+        s=await auth(request);catalog,_,rates=await store.pricing()
+        body=navigation(s)+'<h1>Цены и услуги</h1><p>Цены хранятся в базе. Изменения применяются к новым бронированиям; у созданных броней стоимость остаётся в снимке.</p>'
+        body+='<div class="card"><h2>Аренда и доплаты</h2>'
+        for code,label in RATE_LABELS.items():
+            body+='<p>'+e(label)+' · '+e(rub(rates[code]))+'</p>'+form(s,'/prices/rate/'+code,'<label>Цена, ₽<input name="amount" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(rates[code]))+'" required></label>','Сохранить тариф')
+        body+='</div><div class="card scroll"><h2>Услуги</h2><table><tr><th>Услуга</th><th>Цена</th><th>Доступна</th></tr>'
+        for item in catalog.values():
+            body+='<tr><td>'+e(item['name'])+'</td><td>'+e(rub(item['price']))+'</td><td>'+('да' if item['available'] else 'нет')+'</td></tr>'
+        body+='</table></div>'
+        for code,item in catalog.items():
+            fields=('<label>Название<input name="name" maxlength="80" value="'+e(item['name'])+'" required></label>'
+                    '<label>Цена, ₽<input name="price" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(item['price']))+'" required></label>'
+                    '<label><input type="checkbox" name="available" value="yes"'+(' checked' if item['available'] else '')+'> Доступна для заказа</label>')
+            body+='<div class="card"><h2>'+e(item['name'])+'</h2>'+form(s,'/prices/service/'+code,fields,'Сохранить услугу')+'</div>'
+        return web.Response(text=page('Цены и услуги',body),content_type='text/html')
+    async def price_rate(request):
+        s=await auth(request,True);data=await request.post();code=request.match_info['code']
+        await store.set_rate(s['actor'],code,money(data.get('amount','')))
+        raise web.HTTPFound('/prices')
+    async def price_service(request):
+        s=await auth(request,True);data=await request.post();code=request.match_info['code']
+        if not re_full_code(code):raise RuleError('Неизвестная услуга.')
+        await store.set_service(s['actor'],code,str(data.get('name','')).strip(),money(data.get('price','')),data.get('available')=='yes')
+        raise web.HTTPFound('/prices')
 
     async def payments(request):
         s=await auth(request);store.admin(s['actor'])
@@ -244,9 +271,12 @@ def make_app(store,settings,secure=True):
     from admin_booking import mount_staff_booking
     mount_staff_booking(app,store,auth,form,page,e,navigation)
     app.add_routes([web.get('/payments',payments),web.post('/payments',payment_create),web.post('/payments/{id}/resolve',payment_resolve),web.get('/payments.js',payment_js)])
-    app.add_routes([web.get('/style.css',style),web.get('/health',health),web.get('/login',login_page),web.get('/login.js',login_js),web.post('/login',login),web.post('/logout',logout),web.get('/',home),web.get('/booking/{id}',detail),web.post('/booking/{id}/{action}',action),web.post('/block',block),web.post('/unblock/{id}',unblock),web.get('/archive',archive),web.get('/audit',audit),web.get('/catalog',catalog),web.post('/holiday',holiday),web.post('/holiday/remove',remove_holiday)])
+    app.add_routes([web.get('/style.css',style),web.get('/health',health),web.get('/login',login_page),web.get('/login.js',login_js),web.post('/login',login),web.post('/logout',logout),web.get('/',home),web.get('/booking/{id}',detail),web.post('/booking/{id}/{action}',action),web.post('/block',block),web.post('/unblock/{id}',unblock),web.get('/archive',archive),web.get('/audit',audit),web.get('/catalog',catalog),web.post('/holiday',holiday),web.post('/holiday/remove',remove_holiday),web.get('/prices',prices),web.post('/prices/rate/{code}',price_rate),web.post('/prices/service/{code}',price_service)])
     return app
 
 def re_full_token(value):
     import re
     return bool(re.fullmatch('[a-f0-9]{32}',value))
+def re_full_code(value):
+    import re
+    return bool(re.fullmatch('[a-z_]{1,20}',value))
