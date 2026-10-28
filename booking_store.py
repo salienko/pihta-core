@@ -20,6 +20,20 @@ SCHEMA='pihta_booking_v2'
 LOCK=7319845
 WORKER_LOCK=7319846
 
+
+def start_state(data):
+    """С какого шага начинать оформление.
+
+    Имя и телефон, которые гость уже оставил (в «Моих данных» или в прошлой
+    брони), повторно не спрашиваем — сразу переходим к числу гостей.
+    """
+    if data.get('name') and data.get('phone'):
+        return 'guests'
+    if data.get('name'):
+        return 'phone'
+    return 'name'
+
+
 class WorkerLock:
     """Single-instance lock of the core.
 
@@ -146,7 +160,8 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
             token=secrets.token_hex(6);known=await self.contact_card(db,actor)
             data={'flow_version':VERSION,'guests':1,'children':0,'hours':2,'cart':{}}
             if known:data.update(name=known['name'],phone=known['phone'])
-            await db.execute("INSERT INTO drafts(telegram_id,token,state,data,revision,updated_at) VALUES($1,$2,'name',$3::jsonb,0,now()) ON CONFLICT(telegram_id) DO UPDATE SET token=$2,state='name',data=$3::jsonb,revision=drafts.revision+1,updated_at=now()",actor,token,json.dumps(data))
+            state=start_state(data)
+            await db.execute("INSERT INTO drafts(telegram_id,token,state,data,revision,updated_at) VALUES($1,$2,$3,$4::jsonb,0,now()) ON CONFLICT(telegram_id) DO UPDATE SET token=$2,state=$3,data=$4::jsonb,revision=drafts.revision+1,updated_at=now()",actor,token,state,json.dumps(data))
             return token
 
     async def draft(self,actor,token=None):
@@ -170,7 +185,7 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
             known=await self.contact_card(db,actor)
             data={'flow_version':VERSION,'guests':1,'children':0,'hours':2,'cart':{}}
             if known:data.update(name=known['name'],phone=known['phone'])
-            await db.execute("UPDATE drafts SET token=$1,state='name',data=$2::jsonb,revision=revision+1,updated_at=now() WHERE telegram_id=$3",secrets.token_hex(6),json.dumps(data,ensure_ascii=False),actor)
+            await db.execute("UPDATE drafts SET token=$1,state=$2,data=$3::jsonb,revision=revision+1,updated_at=now() WHERE telegram_id=$4",secrets.token_hex(6),start_state(data),json.dumps(data,ensure_ascii=False),actor)
 
     async def profile(self,actor,name=None,phone=None):
         """«Мои данные»: у склеенного гостя имя и номер берём из записи гостя."""

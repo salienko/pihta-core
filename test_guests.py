@@ -307,3 +307,23 @@ class GuestAdmin(Setup):
         self.assertEqual(await self.store.pool.fetchval(
             'SELECT guest_id FROM guest_accounts WHERE platform=$1 AND external_id=$2', 'telegram', TG),
             first['id'])
+
+
+@unittest.skipUnless(URL, 'TEST_DATABASE_URL required')
+class KnownGuest(Setup):
+    async def test_known_guest_is_not_asked_for_name_and_phone_again(self):
+        """Имя и телефон уже есть в «Моих данных» — не спрашиваем их снова."""
+        actor = 700501
+        await self.book(actor, PHONE_A, 'Иван')
+        screen = await self.send('telegram', actor, action='begin')
+        self.assertEqual(screen['state'], 'guests')
+        self.assertIn('Всего гостей', screen['text'])
+        self.assertNotIn('Как к Вам обращаться', screen['text'])
+        draft = await self.store.draft(actor)
+        self.assertEqual(draft['data']['name'], 'Иван')
+        self.assertEqual(draft['data']['phone'], PHONE_A)
+
+    async def test_new_guest_still_asked_for_name(self):
+        """Новый гость по-прежнему называет себя первым делом."""
+        screen = await self.send('telegram', 700502, action='begin')
+        self.assertEqual(screen['state'], 'name')
