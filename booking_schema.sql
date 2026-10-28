@@ -168,26 +168,37 @@ CREATE TABLE IF NOT EXISTS guest_accounts(
 CREATE INDEX IF NOT EXISTS guest_accounts_guest ON guest_accounts(guest_id,last_seen_at DESC);
 
 -- Миграция: профили уже содержат номер, поэтому аккаунт считается подтверждённым.
+-- Платформу берём из actor_platforms: аккаунт, который писал из MAX, не должен
+-- считаться Telegram-аккаунтом (иначе сообщения уйдут не в тот мессенджер).
+UPDATE guest_accounts a SET platform=ap.platform
+ FROM actor_platforms ap
+ WHERE ap.actor=a.external_id AND a.platform<>ap.platform
+   AND NOT EXISTS(SELECT 1 FROM guest_accounts x
+                  WHERE x.platform=ap.platform AND x.external_id=a.external_id);
 -- Уже привязанные аккаунты не трогаем: иначе номер, введённый руками в брони,
 -- создавал бы гостя-призрака при каждом перезапуске.
 INSERT INTO guests(phone,name)
  SELECT DISTINCT ON (p.phone) p.phone,p.name FROM profiles p
  WHERE p.phone ~ '^\+7[0-9]{10}$'
-   AND NOT EXISTS(SELECT 1 FROM guest_accounts a WHERE a.platform='telegram' AND a.external_id=p.telegram_id)
+   AND NOT EXISTS(SELECT 1 FROM guest_accounts a WHERE a.external_id=p.telegram_id)
  ORDER BY p.phone,p.telegram_id
 ON CONFLICT(phone) DO NOTHING;
 INSERT INTO guest_accounts(platform,external_id,guest_id,verified)
- SELECT 'telegram',p.telegram_id,g.id,true FROM profiles p JOIN guests g ON g.phone=p.phone
+ SELECT COALESCE(ap.platform,'telegram'),p.telegram_id,g.id,true
+ FROM profiles p JOIN guests g ON g.phone=p.phone
+ LEFT JOIN actor_platforms ap ON ap.actor=p.telegram_id
 ON CONFLICT(platform,external_id) DO NOTHING;
 -- Брони: гость ищется по номеру из снимка, сами брони не переписываются.
 INSERT INTO guests(phone,name)
  SELECT DISTINCT ON (b.data->>'phone') b.data->>'phone',COALESCE(b.data->>'name','')
  FROM bookings b
  WHERE b.telegram_id IS NOT NULL AND b.data->>'phone' ~ '^\+7[0-9]{10}$'
-   AND NOT EXISTS(SELECT 1 FROM guest_accounts a WHERE a.platform='telegram' AND a.external_id=b.telegram_id)
+   AND NOT EXISTS(SELECT 1 FROM guest_accounts a WHERE a.external_id=b.telegram_id)
  ORDER BY b.data->>'phone',b.created_at
 ON CONFLICT(phone) DO NOTHING;
 INSERT INTO guest_accounts(platform,external_id,guest_id,verified)
- SELECT 'telegram',b.telegram_id,g.id,true FROM bookings b JOIN guests g ON g.phone=b.data->>'phone'
+ SELECT COALESCE(ap.platform,'telegram'),b.telegram_id,g.id,true
+ FROM bookings b JOIN guests g ON g.phone=b.data->>'phone'
+ LEFT JOIN actor_platforms ap ON ap.actor=b.telegram_id
  WHERE b.telegram_id IS NOT NULL
 ON CONFLICT(platform,external_id) DO NOTHING;
