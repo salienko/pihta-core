@@ -65,13 +65,18 @@ async def deliver_once(store, settings, channels, session):
         if row['event'].startswith(('pkreceipt:', 'pkreceiptadmin:', 'pkfinal:', 'pkfinalstaff:')) or \
                 (row['event'].startswith('pkpaid:') and 'доступен по кнопке' in row['text']):
             receipt_url = await store.receipt_delivery_url(row['event'])
-        platform = await store.pool.fetchval(
-            'SELECT platform FROM actor_platforms WHERE actor=$1', row['recipient']) or 'telegram'
+        # Гость мог ответить уже из другого мессенджера: сообщение уходит в его
+        # последний активный канал. Уведомления админам идут по их аккаунту.
+        where = (dict(platform=await store.platform_of(store.pool, row['recipient']),
+                      external_id=row['recipient'])
+                 if row['recipient'] in settings.admin_ids
+                 else await store.delivery_target(row['recipient'], set(channels)))
+        platform = where['platform']
         target = channels.get(platform)
         if not target:
             await store.failed(row['id'], 'channel_missing', permanent=True)
             return True
-        payload = {'external_id': row['recipient'], 'text': row['text'], 'dedupe_key': row['event'],
+        payload = {'external_id': where['external_id'], 'text': row['text'], 'dedupe_key': row['event'],
                    'rows': buttons_for(row, settings, payment, receipt_url)}
         async with session.post(target['url'].rstrip('/') + '/deliver', json=payload,
                                 headers={'X-Core-Token': target['token']}) as response:

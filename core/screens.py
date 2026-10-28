@@ -14,6 +14,7 @@ Action strings keep the Telegram callback grammar
 """
 import asyncio
 import calendar
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -362,7 +363,15 @@ class Screens:
     async def profile(self, actor):
         p = await self.store.profile(actor)
         text = ('👤 Мои данные\n\n' + p['name'] + '\n' + p['phone'] if p
-                else '👤 Мои данные\n\nПока не сохранены.') + '\n\nТолько для будущих бронирований.'
+                else '👤 Мои данные\n\nПока не сохранены.')
+        guest = await self.store.guest_of(self.store.pool, actor)
+        if guest:
+            accounts = await self.store.guest_accounts(guest['id'])
+            if len(accounts) > 1:
+                names = {'telegram': 'Telegram', 'max': 'MAX'}
+                text += '\n\nСвязанные мессенджеры: ' + ', '.join(
+                    names.get(item['platform']) or item['platform'] for item in accounts)
+        text += '\n\nТолько для будущих бронирований.'
         return Screen(text, rows=rows([btn('✏️ Изменить данные', 'profileedit')],
                                       [btn('← Назад', 'list:0:0')]) + nav())
 
@@ -374,6 +383,95 @@ class Screens:
                       rows=rows([btn('📍 Маршрут', url=self.settings.content['map_url'])],
                                 [btn('← Назад', back)]) + nav())
 
+    # ---------- гость: подтверждённый номер ----------
+
+    async def link_phone(self, actor, phone, context, name=''):
+        """Подтверждённый кнопкой номер: привязывает аккаунт к гостю.
+
+        Возвращает dict(phone=...) либо dict(screen=...) с вопросом «это вы?»,
+        если номер уже закреплён за другим аккаунтом.
+        """
+        result = await self.store.confirm_contact(actor, phone, name)
+        if result['result'] == 'bound':
+            return dict(phone=normalize_phone(phone))
+        return dict(screen=await self.merge_question(actor, result['guest'], phone, context, name))
+
+    async def merge_question(self, actor, guest, phone, context, name=''):
+        """Номер занят: ответ «да» склеит аккаунты, «нет» — откажет в номере."""
+        ref = json.dumps(dict(guest=guest['id'], phone=normalize_phone(phone),
+                              context=context, name=name), ensure_ascii=False)
+        await self.store.set_pending_input(actor, 'guest_merge', ref)
+        return Screen('📱 Этот номер уже привязан к другому аккаунту.\n\n'
+                      'Это вы? Если да, объединим аккаунты: брони, чеки и ссылки будут '
+                      'доступны и здесь, и в прежнем мессенджере.',
+                      photo='booking', rows=rows([btn('Да, это я', 'guestmerge:yes')],
+                                                 [btn('Нет', 'guestmerge:no')]))
+
+    async def merge_pending(self, actor, pending):
+        ref = json.loads(pending['ref'] or '{}')
+        guest = await self.store.guest(ref.get('guest') or 0)
+        if not guest:
+            await self.store.clear_pending_input(actor)
+            return Screen('Этот номер больше не привязан к аккаунту. Укажите его заново.',
+                          rows=rows([btn('Продолжить', 'resume')]) + nav())
+        return await self.merge_question(actor, dict(guest), ref.get('phone', ''), ref.get('context') or 'draft',
+                                         ref.get('name') or '')
+
+    async def resolve_merge(self, actor, answer):
+        pending = await self.store.pending_input(actor)
+        if not pending or pending['kind'] != 'guest_merge' or not pending['ref']:
+            return Screen('Подтверждение устарело. Укажите номер заново.',
+                          rows=rows([btn('Продолжить', 'resume')]) + nav())
+        ref = json.loads(pending['ref'])
+        await self.store.clear_pending_input(actor)
+        if answer != 'yes':
+            return await self.declined_merge(actor, ref)
+        await self.store.merge_account_into(actor, ref['guest'], ref.get('name') or '')
+        phone = normalize_phone(ref['phone'])
+        context = ref.get('context') or 'draft'
+        if context.startswith('booking:'):
+            ident = context.split(':', 1)[1]
+            await self.store.set_contact_phone(ident, phone, actor)
+            screen = await self.show(actor, ident)
+            return Screen(screen.text, screen.photo, screen.rows, screen.state,
+                          notice='Аккаунты объединены. Телефон обновлён: ' + phone)
+        if context == 'profile':
+            screen = await self.profile(actor)
+            return Screen(screen.text, screen.photo, screen.rows, screen.state,
+                          notice='Аккаунты объединены. Номер обновлён: ' + phone)
+        d = await self.unfinished(actor)
+        if not d:
+            return Screen('✅ Аккаунты объединены. Телефон: ' + phone,
+                          rows=rows([btn('📋 Мои бронирования', 'list:0:0')]) + nav())
+        data = dict(d['data'])
+        data['phone'] = phone
+        accept_field(data, 'phone')
+        data['consent'] = False
+        state = 'review' if data.pop('editing', False) and data.get('start') else 'guests'
+        await self.store.save(actor, d, state, data)
+        return await self.render(actor, await self.store.draft(actor, d['token']))
+
+    async def declined_merge(self, actor, ref):
+        """«Нет»: не склеиваем и не даём пользоваться чужим номером."""
+        context = ref.get('context') or 'draft'
+        text = ('📱 Этот номер уже привязан к другому аккаунту.\n\n'
+                'Два гостя с одним номером запрещены. Укажите другой номер '
+                'или поделитесь своим контактом со своего аккаунта.')
+        if context == 'profile':
+            d = await self.unfinished(actor)
+            if d and d['state'].startswith('profile_'):
+                return Screen(text, photo='booking', state='profile_phone', reply_contact=True,
+                              rows=rows([btn('← Назад', 'profilecancel')]) + nav())
+            return Screen(text, rows=rows([btn('📋 Мои бронирования', 'list:0:0')]) + nav())
+        if context.startswith('booking:'):
+            screen = await self.show(actor, context.split(':', 1)[1])
+            return Screen(screen.text, screen.photo, screen.rows, screen.state, notice=text)
+        d = await self.unfinished(actor)
+        if not d:
+            return Screen(text, rows=rows([btn('☎️ Администратор', 'contact')]) + nav())
+        return Screen(text, photo='booking', state='phone_contact', reply_contact=True,
+                      rows=rows([btn('← Назад', 'resume')]) + nav())
+
     # ---------- text input ----------
 
     async def text(self, actor, message, contact_phone=''):
@@ -383,6 +481,14 @@ class Screens:
     async def _text(self, actor, message, contact_phone=''):
         text = (message or '').strip()
         try:
+            pending = await self.store.pending_input(actor)
+            if pending and pending['kind'] == 'guest_merge' and (
+                    text.startswith('/') or text in ('Главное меню', '🏠 Главное меню', 'Мои бронирования',
+                                                     'Забронировать', 'Правила', 'Контакты', 'Цены',
+                                                     'Цены и услуги', 'Помощь')):
+                # Явная команда снимает вопрос «это вы?».
+                await self.store.clear_pending_input(actor)
+                pending = None
             if text in ('/start', '/menu', 'Главное меню', '🏠 Главное меню'):
                 return await self.home(actor)
             if text == '/id':
@@ -395,14 +501,23 @@ class Screens:
                 return await self.listing(actor)
             if text in ('/help', 'Правила', 'Контакты', 'Цены', 'Цены и услуги', 'Помощь'):
                 return await self.info(actor, 'Помощь' if text == '/help' else text)
-            pending = await self.store.pending_input(actor)
+            if pending and pending['kind'] == 'guest_merge' and pending['ref']:
+                # Ждём ответа кнопкой; текст не должен молча съесть вопрос.
+                return await self.merge_pending(actor, pending)
             if pending and pending['kind'] == 'phone' and pending['ref']:
                 back = 'open:' + pending['ref']
                 if text in ('← Назад', '✕ Отменить оформление', '🏠 Главное меню'):
                     await self.store.clear_pending_input(actor)
                     return await self.home(actor) if text == '🏠 Главное меню' else await self.show(actor, pending['ref'])
                 try:
-                    phone = normalize_phone(contact_phone or text)
+                    if contact_phone:
+                        # Подтверждённый номер не только правит бронь, но и связывает аккаунты.
+                        linked = await self.link_phone(actor, contact_phone, 'booking:' + pending['ref'])
+                        if 'screen' in linked:
+                            return linked['screen']
+                        phone = linked['phone']
+                    else:
+                        phone = normalize_phone(text)
                 except RuleError:
                     return Screen('Не получилось разобрать номер.\n\n'
                                   'Напишите в виде +7 981 123-45-67 или нажмите «Поделиться номером».',
@@ -428,14 +543,28 @@ class Screens:
                 await self.store.save(actor, d, previous, data)
                 return await self.render(actor, await self.store.draft(actor, d['token']))
             if state in ('phone', 'phone_contact', 'profile_phone', 'profile_contact'):
-                if contact_phone:
-                    phone = normalize_phone(contact_phone)
+                confirmed = bool(contact_phone)
+                name = data.get('profile_name') or data.get('name') or ''
+                if confirmed:
+                    # Номер из кнопки «поделиться контактом» связывает аккаунты.
+                    linked = await self.link_phone(actor, contact_phone,
+                                                   'profile' if profile else 'draft', name)
+                    if 'screen' in linked:
+                        return linked['screen']
+                    phone = linked['phone']
                 elif text == '✓ Использовать ' + data.get('phone', ''):
                     phone = normalize_phone(data['phone'])
                 else:
                     phone = normalize_phone(text)
                 if profile:
-                    await self.store.profile(actor, data['profile_name'], phone)
+                    saved = await self.store.save_profile(actor, data['profile_name'], phone,
+                                                          confirmed=confirmed)
+                    if saved['result'] == 'taken':
+                        return Screen('📱 Этот номер уже привязан к другому аккаунту.\n\n'
+                                      'Введите другой номер или нажмите «Поделиться номером» '
+                                      'со своего аккаунта.',
+                                      photo='booking', state='profile_phone', reply_contact=True,
+                                      rows=rows([btn('← Назад', 'profilecancel')]) + nav())
                     previous = data.pop('profile_return', 'name')
                     data.pop('profile_name', None)
                     await self.store.save(actor, d, previous, data)
@@ -608,6 +737,8 @@ class Screens:
                 return Screen(text, rows=rows(*body, [btn('← Назад', 'open:' + parts[1])]) + nav())
             if action == 'paystaff':
                 raise RuleError('Решение по платежу принимается в веб-панели.')
+            if action == 'guestmerge':
+                return await self.resolve_merge(actor, parts[1] if len(parts) > 1 else '')
             if len(parts) != 4:
                 raise RuleError('Это кнопка прежнего экрана. Откройте текущее бронирование.')
             action, token, revision, value = parts
