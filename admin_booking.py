@@ -21,13 +21,13 @@ def mount_staff_booking(app,store,auth,form,page,e,navigation):
         if not today<=day<=horizon(today):raise RuleError('Дата вне доступного периода бронирования.')
         body=navigation(s)+'<h1>Создать бронь по телефону</h1><div class="card"><form><label>Дата<input type="date" name="day" value="'+e(day.isoformat())+'" min="'+today.isoformat()+'" max="'+horizon(today).isoformat()+'" required></label><button>Показать свободные сеансы</button></form></div>'
         options=''
-        catalog,holidays=await store.pricing()
+        catalog,holidays,rates=await store.pricing()
         for hour in SLOTS:
             start=datetime.combine(day,datetime.min.time(),TZ)+timedelta(hours=hour)
             try:free=await store.free(start)
             except RuleError:continue
             if not free:continue
-            quote=estimate(dict(start=start.isoformat(),hours=2,guests=1,children=0,cart={}),catalog,holidays)
+            quote=estimate(dict(start=start.isoformat(),hours=2,guests=1,children=0,cart={}),catalog,holidays,rates)
             label=start.strftime('%H:%M')+'–'+(start+timedelta(hours=2)).strftime('%H:%M')+' · '+rub(quote['total'])+' для 1–4 платных гостей'
             options+='<option value="'+e(start.isoformat())+'">'+e(label)+'</option>'
         if options:

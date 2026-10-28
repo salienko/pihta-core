@@ -64,10 +64,10 @@ class PaymentNotice(unittest.IsolatedAsyncioTestCase):
         start = (datetime.now(TZ) + timedelta(days=4)).replace(hour=13, minute=0, second=0, microsecond=0)
         token = await self.store.begin(2)
         d = await self.store.draft(2)
-        catalog, holidays = await self.store.pricing()
+        catalog, holidays, rates = await self.store.pricing()
         data = dict(d['data'], name='Гость', phone=PHONE, day=start.date().isoformat(),
                     start=start.isoformat(), consent=True, rules_hash=self.settings.rules_hash)
-        data['quote'] = estimate(data, catalog, holidays)
+        data['quote'] = estimate(data, catalog, holidays, rates)
         await self.store.save(2, d, 'review', data)
         self.ident = (await self.store.submit(2, token))[0]
         await self.store.pool.execute('UPDATE outbox SET delivered_at=now()')

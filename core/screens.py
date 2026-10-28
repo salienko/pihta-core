@@ -184,12 +184,12 @@ class Screens:
             body += [[btn('← Назад', b('back', 'date'))], [btn('💬 Другое время', 'contact')]]
             return Screen(text, photo='time', rows=rows(*body) + footer, state=state)
         if state == 'review':
-            catalog, holidays = await self.store.pricing()
+            catalog, holidays, rates = await self.store.pricing()
             try:
                 validate_start(datetime.fromisoformat(data['start']), datetime.now(TZ))
                 if not await self.store.free(datetime.fromisoformat(data['start'])):
                     raise RuleError('Время уже занято. Выберите другое.')
-                q = estimate(data, catalog, holidays)
+                q = estimate(data, catalog, holidays, rates)
             except RuleError as error:
                 await self.store.save(actor, d, 'slot', dict(data, consent=False))
                 d = await self.store.draft(actor, d['token'])
@@ -259,11 +259,18 @@ class Screens:
                     'Не более двух действующих броней на разные даты. Запись за час — два месяца до сеанса.')
             body.insert(0, [btn('📄 Полные правила', 'rulesfull')])
         elif section in ('Цены', 'Цены и услуги'):
-            text = ('💰 Аренда бани · 2 часа\n\nПн–пт до 19:00 — 5 000 ₽\n'
-                    'С 19:00 и в выходные — 6 000 ₽\nПраздничные даты — 6 500 ₽*\n\n'
-                    'Включены 4 гостя от 8 лет.\nЗа каждого следующего — 250 ₽/час.\n'
+            catalog, _, rates = await self.store.pricing()
+            services = ''.join(f'{item["name"]} — {rub(item["price"])}\n'
+                               for item in catalog.values() if item['available'])
+            text = ('💰 Аренда бани · 2 часа\n\n'
+                    f'Пн–пт до 19:00 — {rub(rates["rent_weekday"])}\n'
+                    f'С 19:00 и в выходные — {rub(rates["rent_weekend"])}\n'
+                    'Праздничные даты — по тарифу администратора*\n\n'
+                    'Включены 4 гостя от 8 лет.\n'
+                    f'За каждого следующего — {rub(rates["guest_extra"])}/час.\n'
                     'Дети до 7 лет включительно — бесплатно.\n\n'
-                    'Точная сумма будет перед отправкой.\n'
+                    + (services + '\n' if services else '')
+                    + 'Точная сумма будет перед отправкой.\n'
                     '*Особые даты и нестандартная длительность — через администратора.')
             body = [[btn('📅 Забронировать', 'begin')]] + body
         else:

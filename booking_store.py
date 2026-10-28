@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime,timedelta
 from pathlib import Path
 import asyncpg
-from booking_domain import TZ,RuleError,estimate,validate_start,can_cancel,card,clean_name,normalize_phone
+from booking_domain import TZ,DEFAULT_RATES,RuleError,estimate,validate_start,can_cancel,card,clean_name,normalize_phone
 from booking_flow import VERSION,require
 from booking_payments import PaymentStore,DEPOSIT,total as payment_total
 from paykeeper_store import PayKeeperStore
@@ -175,14 +175,49 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
         if name is None:return unpack(await self.pool.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor))
         await self.pool.execute('INSERT INTO profiles VALUES($1,$2,$3) ON CONFLICT(telegram_id) DO UPDATE SET name=$2,phone=$3',actor,clean_name(name),normalize_phone(phone))
 
+    async def seed_prices(self,db):
+        """Первый запуск: цены услуг берём из content.json, тарифы аренды — из DEFAULT_RATES."""
+        for code,amount in DEFAULT_RATES.items():
+            await db.execute('INSERT INTO price_settings(code,amount) VALUES($1,$2) ON CONFLICT(code) DO NOTHING',code,amount)
+        for order,item in enumerate(self.settings.content['services']):
+            await db.execute('INSERT INTO service_settings(code,name,price,unit,available,sort_order) VALUES($1,$2,$3,$4,true,$5) ON CONFLICT(code) DO NOTHING',item['code'],item['name'],item['price'],item.get('unit','шт.'),order)
+            # Строка могла остаться от версии, где в таблице хранилась только доступность.
+            await db.execute('UPDATE service_settings SET name=COALESCE(name,$2),price=COALESCE(price,$3),unit=COALESCE(unit,$4),sort_order=$5 WHERE code=$1',item['code'],item['name'],item['price'],item.get('unit','шт.'),order)
+
     async def pricing(self,db=None):
+        """Каталог услуг, праздники и тарифы аренды. Цены читаются из БД, content.json — только сид."""
         db=db or self.pool
-        catalog={i['code']:dict(i) for i in self.settings.content['services']}
-        for r in await db.fetch('SELECT * FROM service_settings'):
-            if r['code'] in catalog:catalog[r['code']]['available']=r['available']
+        if not await db.fetchval('SELECT EXISTS(SELECT 1 FROM service_settings) AND EXISTS(SELECT 1 FROM price_settings)'):
+            await self.seed_prices(db)
+        catalog={r['code']:dict(code=r['code'],name=r['name'],price=r['price'],unit=r['unit'],available=r['available'])
+                 for r in await db.fetch('SELECT * FROM service_settings WHERE price IS NOT NULL ORDER BY sort_order,code')}
+        rates=dict(DEFAULT_RATES,**{r['code']:r['amount'] for r in await db.fetch('SELECT code,amount FROM price_settings')})
         holidays=dict(self.settings.content.get('holidays',{}))
         for r in await db.fetch('SELECT * FROM holiday_rates'):holidays[r['day'].isoformat()]=dict(label=r['label'],base=r['base'],extra=r['extra'])
-        return catalog,holidays
+        return catalog,holidays,rates
+
+    async def service(self,code):
+        return await self.pool.fetchrow('SELECT * FROM service_settings WHERE code=$1',code)
+
+    async def set_service(self,actor,code,name,price,available):
+        """Правка услуги из админки. Снимки существующих броней не меняются."""
+        self.admin(actor)
+        if not 1<=len(name)<=80:raise RuleError('Укажите название услуги до 80 символов.')
+        if type(price) is not int or not 0<price<=100000000:raise RuleError('Цена должна быть целым числом больше нуля.')
+        async with self.tx() as db:
+            if await db.execute('UPDATE service_settings SET name=$2,price=$3,available=$4,updated_at=now() WHERE code=$1',code,name,price,available)!='UPDATE 1':
+                raise RuleError('Услуга не найдена. Обновите страницу.')
+            await self.audit(db,None,actor,'service_price',dict(code=code,name=name,price=price,available=available))
+
+    async def set_rate(self,actor,code,amount):
+        """Правка тарифа аренды или доплаты за гостя. Только для новых броней."""
+        self.admin(actor)
+        if code not in DEFAULT_RATES:raise RuleError('Неизвестный тариф.')
+        if type(amount) is not int or not 0<amount<=100000000:raise RuleError('Цена должна быть целым числом больше нуля.')
+        if code!='guest_extra' and amount%2:raise RuleError('Цена за 2 часа должна делиться на 2.')
+        async with self.tx() as db:
+            await db.execute('INSERT INTO price_settings(code,amount,updated_at) VALUES($1,$2,now()) ON CONFLICT(code) DO UPDATE SET amount=EXCLUDED.amount,updated_at=now()',code,amount)
+            await self.audit(db,None,actor,'rate_price',dict(code=code,amount=amount))
 
     async def blocked(self,db,start,end):
         return await db.fetchval("""SELECT EXISTS(SELECT 1 FROM bookings WHERE
@@ -229,8 +264,8 @@ class BookingStore(ReserveStore,StaffBookingStore,FinalReceiptStore,PayKeeperSto
                 data['guest_min_paid_age']=8
             if not data.get('consent') or data.get('rules_hash')!=self.settings.rules_hash:raise RuleError('Примите актуальные правила.')
             data['name']=clean_name(data['name']);data['phone']=normalize_phone(data['phone'])
-            catalog,holidays=await self.pricing(db)
-            q=estimate(data,catalog,holidays)
+            catalog,holidays,rates=await self.pricing(db)
+            q=estimate(data,catalog,holidays,rates)
             if q!=data.get('quote'):raise RuleError('Расчёт изменился. Проверьте итог и примите правила заново.')
             rows=await db.fetch("SELECT starts_at FROM bookings WHERE telegram_id=$1 AND status IN ('pending','confirmed') AND ends_at>$2",actor,clock)
             if len(rows)>=2:raise RuleError('У вас уже две активные брони. Откройте «Мои бронирования».')

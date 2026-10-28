@@ -4,6 +4,11 @@ from domain import TZ, RuleError, horizon, participants, clean_name, normalize_p
 
 SLOTS = (10, 13, 16, 19, 22)
 ACTIVE = ('pending', 'confirmed')
+# Тарифы аренды по умолчанию. Рабочие значения живут в БД (price_settings), это запасные.
+DEFAULT_RATES = {'rent_weekday': 500000, 'rent_weekend': 600000, 'guest_extra': 25000}
+RATE_LABELS = {'rent_weekday': 'Аренда, будни днём · 2 часа',
+               'rent_weekend': 'Аренда, вечер и выходные · 2 часа',
+               'guest_extra': 'Доплата за гостя сверх четырёх · за час'}
 LABELS = {'draft':'Черновик', 'pending':'Ждёт подтверждения', 'confirmed':'Подтверждено',
           'cancelled':'Отменено', 'expired':'Отменено автоматически',
           'rejected':'Отказано', 'completed':'Завершено'}
@@ -18,7 +23,8 @@ def validate_start(start, clock):
         raise RuleError('Запись минимум за час и максимум на два календарных месяца.')
     return start + timedelta(hours=2)
 
-def estimate(data, catalog, holidays):
+def estimate(data, catalog, holidays, rates=None):
+    rates = dict(DEFAULT_RATES, **(rates or {}))
     start = datetime.fromisoformat(data['start']).astimezone(TZ)
     if data.get('hours') != 2:
         raise RuleError('Нестандартное время согласовывается с администратором.')
@@ -32,8 +38,8 @@ def estimate(data, catalog, holidays):
     for offset in range(2):
         hour = start + timedelta(hours=offset)
         special = holidays.get(hour.date().isoformat())
-        rent += (special['base'] if special else 600000 if hour.weekday() >= 5 or hour.hour >= 19 else 500000)//2
-    extra = max(0, data['guests']-data['children']-4)*25000*2
+        rent += (special['base'] if special else rates['rent_weekend'] if hour.weekday() >= 5 or hour.hour >= 19 else rates['rent_weekday'])//2
+    extra = max(0, data['guests']-data['children']-4)*rates['guest_extra']*2
     items=[]
     for code, qty in sorted(data.get('cart', {}).items()):
         if code not in catalog or type(qty) is not int or not 1 <= qty <= 100 or not catalog[code].get('available', True):
