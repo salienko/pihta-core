@@ -76,7 +76,18 @@ class GuestJourney(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calendar_screen['state'], 'date')
 
         day = (datetime.now(TZ) + timedelta(days=4)).date().isoformat()
-        slots = await self.act(self.find(calendar_screen, 'day:', day))
+        # Дата брони может оказаться в следующем месяце — календарь открывается
+        # на текущем, поэтому листаем вперёд, пока нужный день не появится.
+        screen = calendar_screen
+        action = None
+        for _ in range(3):
+            try:
+                action = self.find(screen, 'day:', day)
+                break
+            except AssertionError:
+                screen = await self.act(self.find(screen, 'month:'))
+        self.assertIsNotNone(action, f'no day {day} in the calendar')
+        slots = await self.act(action)
         self.assertEqual(slots['state'], 'slot')
 
         review = await self.act(self.find(slots, 'slot:'))
