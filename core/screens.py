@@ -333,7 +333,7 @@ class Screens:
                 return [btn(label, f'payrequest:{kind}:{ident}')]
 
             if not r['paid']:
-                body.append(pay('💳 Внести предоплату 2 000 ₽', 'deposit'))
+                body.append(pay('💳 Внести предоплату — 2 000 ₽', 'deposit'))
                 body.append(pay('💳 Оплатить полностью — ' + rub(payment_total(r)), 'full'))
             else:
                 body.append(pay('💳 Оплатить — ' + rub(payment_total(r) - r['paid']), 'balance'))

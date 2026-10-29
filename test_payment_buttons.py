@@ -83,7 +83,7 @@ class PayButton(unittest.IsolatedAsyncioTestCase):
         screen = await self.screen('open:' + self.ident)
         labels = [b['text'] for b in self.buttons(screen)]
         self.assertIn('🔗 Перейти к оплате 2 000 ₽', labels)
-        self.assertNotIn('💳 Внести предоплату 2 000 ₽', labels)
+        self.assertNotIn('💳 Внести предоплату — 2 000 ₽', labels)
         link = [b for b in self.buttons(screen) if b['text'] == '🔗 Перейти к оплате 2 000 ₽'][0]
         self.assertEqual(link.get('url'), 'https://pay.test/' + request)
         self.assertIsNone(link.get('action'))
