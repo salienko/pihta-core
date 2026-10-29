@@ -82,10 +82,10 @@ def card(row, personal=True):
            f"Дети до {min_age-1} лет включительно: {d['children']}",f"Простыни включены: {d['guests']} шт.",'',f"Аренда: {rub(q['rent'])}"]
     if q['guest_extra']:lines.append(f"Доплата за гостей: {rub(q['guest_extra'])}")
     # Historical snapshots can contain old goods; display them without enabling orders.
-    lines += [f"{i['name']} × {i['quantity']} — {rub(i['total'])}" for i in q['items']]
+    lines += [f"{i['name']} {i['quantity']} шт. {rub(i['total'])}" for i in q['items']]
     for code in sorted(row.get('extras') or {}):
         extra=row['extras'][code]
-        lines.append(f"{extra.get('name',code)} × {int(extra['qty'])} — "
+        lines.append(f"{extra.get('name',code)} {int(extra['qty'])} {extra.get('unit') or 'шт.'} "
                      f"{rub(int(extra['price'])*int(extra['qty']))}")
     actual=row.get('actual_total');total=actual if actual is not None else q['total']+int(row.get('extras_total') or 0)
     lines += [f"Итого по брони: {rub(total)}"]

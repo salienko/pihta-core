@@ -318,26 +318,28 @@ class Screens:
                ('\n\nЗдесь пока пусто.' if not found else '\n\nВыберите бронирование.')
         return Screen(text, photo='booking', rows=rows(*body) + nav())
 
+    async def pay_row(self, actor, ident, kind, label):
+        """Кнопка оплаты: готовая ссылка, если счёт уже выставлен, иначе запрос ссылки."""
+        requests = await self.store.payment_requests(actor, ident)
+        linked = next((req for req in requests if req['url'] and req['kind'] == kind), None)
+        if linked:
+            return [btn('🔗 Перейти к оплате ' + rub(linked['amount']), url=linked['url'])]
+        return [btn(label, f'payrequest:{kind}:{ident}')]
+
     async def show(self, actor, ident):
         r = await self.store.get(actor, ident)
         body = []
         if r['status'] in ('pending', 'confirmed') and r['paid'] < payment_total(r):
+            due = payment_total(r) - r['paid']
+            if not r['paid']:
+                body.append(await self.pay_row(actor, ident, 'deposit', '💳 Внести предоплату — 2 000 ₽'))
+                body.append(await self.pay_row(actor, ident, 'full',
+                                               '💳 Оплатить полностью — ' + rub(payment_total(r))))
+            else:
+                label = ('💳 Доплатить за услуги — ' if int(r.get('extras_total') or 0) else '💳 Оплатить — ')
+                body.append(await self.pay_row(actor, ident, 'balance', label + rub(due)))
             requests = await self.store.payment_requests(actor, ident)
             linked = next((req for req in requests if req['url']), None)
-
-            def pay(label, kind):
-                # Once the invoice exists the button itself becomes the link — same slot,
-                # new label — so a second press opens the ready invoice instead of
-                # ordering another one. Deposit, full amount and balance behave alike.
-                if linked and linked['kind'] == kind:
-                    return [btn('🔗 Перейти к оплате ' + rub(linked['amount']), url=linked['url'])]
-                return [btn(label, f'payrequest:{kind}:{ident}')]
-
-            if not r['paid']:
-                body.append(pay('💳 Внести предоплату — 2 000 ₽', 'deposit'))
-                body.append(pay('💳 Оплатить полностью — ' + rub(payment_total(r)), 'full'))
-            else:
-                body.append(pay('💳 Оплатить — ' + rub(payment_total(r) - r['paid']), 'balance'))
             if linked:
                 automatic = bool(await self.store.pool.fetchval(
                     'SELECT 1 FROM paykeeper_invoices WHERE request_id=$1', linked['id']))
@@ -356,7 +358,7 @@ class Screens:
         return Screen(card(r), photo='booking', rows=rows(*body) + nav())
 
     async def services(self, actor, ident, notice=''):
-        """Доп. услуги в действующей брони: список услуг с отметкой выбранных."""
+        """Доп. услуги в действующей брони: ровный список услуг и итог по брони."""
         r = await self.store.get(actor, ident)
         if r['status'] not in ('pending', 'confirmed') or r['ends_at'] <= datetime.now(TZ):
             raise RuleError('Доп. услуги доступны только в действующей брони.')
@@ -366,19 +368,20 @@ class Screens:
         for code, item in catalog.items():
             if not item.get('available', True):
                 continue
-            qty = int((extras.get(code) or {}).get('qty', 0))
-            label = ('✓ ' if qty else '') + item['name'] + ' · ' + rub(item['price'])
-            if qty:
-                label += f' × {qty}'
-            body.append([btn(label, f'svc:{ident}:{code}')])
+            body.append([btn(item['name'] + ' — ' + rub(item['price']), f'svc:{ident}:{code}')])
         total = booking_total(r)
         due = max(0, total - r['paid'])
-        lines = ['🧺 Доп. услуги', '', 'Выберите услугу и укажите количество.']
-        if extras:
-            lines += ['', f'Итого по брони: {rub(total)}',
-                      ('К оплате: ' + rub(due)) if due else '✅ Стоимость оплачена полностью']
+        chosen = sum(int((value or {}).get('qty', 0)) for value in extras.values())
+        lines = ['🧺 Доп. услуги', '']
+        lines.append('Выбрано на ' + rub(int(r.get('extras_total') or 0)) if chosen
+                     else 'Пока ничего не выбрано.')
+        lines += ['', f'Итого по брони: {rub(total)}']
+        if due:
+            lines.append(f'К оплате: {rub(due)}')
         else:
-            lines += ['', f'Итого по брони: {rub(total)}']
+            lines.append('✅ Стоимость оплачена полностью')
+        if due and r['paid']:
+            body.append(await self.pay_row(actor, ident, 'balance', '💳 Доплатить — ' + rub(due)))
         body.append([btn('← Назад', 'open:' + ident)])
         return Screen('\n'.join(lines), photo='booking', rows=rows(*body) + nav(), notice=notice)
 
@@ -392,13 +395,18 @@ class Screens:
         extras = dict(r.get('extras') or {})
         qty = int((extras.get(code) or {}).get('qty', 0))
         unit = item.get('unit') or 'шт.'
+        total = booking_total(r)
+        due = max(0, total - r['paid'])
         lines = [item['name'], '', f'Цена: {rub(item["price"])} за {unit}',
                  f'Выбрано: {qty} {unit}' if qty else 'Не выбрано',
-                 '', f'Итого по брони: {rub(booking_total(r))}']
-        body = [[btn('➖ Убрать одну', f'svcminus:{ident}:{code}'),
-                 btn('➕ Добавить', f'svcplus:{ident}:{code}')]]
+                 '', f'Итого по брони: {rub(total)}']
+        if due:
+            lines.append(f'К оплате: {rub(due)}')
+        body = [[btn('−', f'svcminus:{ident}:{code}'), btn('+', f'svcplus:{ident}:{code}')]]
         if qty:
-            body.append([btn('✖ Убрать совсем', f'svczero:{ident}:{code}')])
+            body.append([btn('Очистить', f'svczero:{ident}:{code}')])
+        if due and r['paid']:
+            body.append(await self.pay_row(actor, ident, 'balance', '💳 Доплатить — ' + rub(due)))
         body.append([btn('← К списку услуг', 'services:' + ident)])
         return Screen('\n'.join(lines), photo='booking', rows=rows(*body) + nav(), notice=notice)
 
@@ -409,7 +417,10 @@ class Screens:
         cart = {key: int((value or {}).get('qty', 0)) for key, value in extras.items()}
         cart[code] = max(0, cart.get(code, 0) + delta)
         await self.store.set_booking_services(actor, ident, cart)
-        return await self.service_quantity(actor, ident, code, 'Количество обновлено.')
+        after = await self.store.get(actor, ident)
+        due = max(0, booking_total(after) - after['paid'])
+        notice = (f'К оплате — {rub(due)}' if due and after['paid'] else 'Количество обновлено.')
+        return await self.service_quantity(actor, ident, code, notice)
 
     async def admin_link(self, actor):
         self.store.admin(actor)

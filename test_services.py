@@ -108,7 +108,7 @@ class Services(unittest.IsolatedAsyncioTestCase):
         ident = await self.book(self.start())
         await self.screens.dispatch(ACTOR, 'svcplus:' + ident + ':oak')
         screen = await self.screens.dispatch(ACTOR, 'open:' + ident)
-        self.assertIn('Веник дубовый × 1 — 600 ₽', screen.text)
+        self.assertIn('Веник дубовый 1 шт. 600 ₽', screen.text)
 
     async def test_cannot_drop_below_paid(self):
         ident = await self.book(self.start())
@@ -155,3 +155,22 @@ class Services(unittest.IsolatedAsyncioTestCase):
                 data={'code': code, 'name': 'Услуга', 'price': '100', 'csrf': csrf},
                 headers={'Origin': self.settings.web_url}, allow_redirects=False)
             self.assertEqual(response.status, 400, code)
+
+    async def test_fully_paid_booking_asks_to_pay_the_extras(self):
+        """Бронь оплачена полностью, гость добавил услугу — появляется доплата."""
+        ident = await self.book(self.start())
+        paid = booking_total(await self.store.get(ACTOR, ident))
+        await self.store.pool.execute('UPDATE bookings SET paid=$2 WHERE id=$1', ident, paid)
+        card = await self.screens.dispatch(ACTOR, 'open:' + ident)
+        self.assertIn('Внесена вся стоимость', card.text)
+
+        await self.screens.dispatch(ACTOR, 'svcplus:' + ident + ':birch')
+        card = await self.screens.dispatch(ACTOR, 'open:' + ident)
+        labels = self.labels(card)
+        self.assertTrue(any('Доплатить за услуги — 500 ₽' in (label or '') for label in labels), labels)
+        self.assertIn('Веник берёзовый 1 шт. 500 ₽', card.text)
+        self.assertIn('Остаток: 500 ₽', card.text)
+
+        request, created = await self.store.request_payment(ACTOR, ident, 'balance')
+        self.assertTrue(created)
+        self.assertEqual(request['amount'], 50000)
