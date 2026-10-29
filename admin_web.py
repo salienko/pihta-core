@@ -10,7 +10,7 @@ import secrets
 from aiohttp import web
 from booking_domain import TZ,RATE_LABELS,RuleError,LABELS,card,rub
 
-STYLE='''*{box-sizing:border-box}body{margin:0;background:#eff3ee;color:#213b2d;font:16px system-ui,sans-serif}header{background:#203d2e;color:white;padding:22px max(5vw,18px)}main{max-width:1100px;margin:auto;padding:24px 18px}h1{font-size:28px}h2{font-size:21px}a{color:#246448}header a{color:white;margin-right:20px}.card{padding:22px;background:white;border-radius:16px;margin:16px 0;box-shadow:0 2px 7px #1a39200b}pre{white-space:pre-wrap;font:inherit;line-height:1.65}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}input,select,textarea,button{font:inherit;padding:12px;border:1px solid #cbd6cc;border-radius:9px;max-width:100%}label{display:block;margin:12px 0}input,select,textarea{display:block;width:100%;margin-top:5px}button{background:#2c6145;color:white;cursor:pointer}button.danger{background:#864735}small,.muted{color:#617568}.badge{display:inline-block;background:#e7efe7;padding:5px 10px;border-radius:20px}table{width:100%;border-collapse:collapse}td,th{padding:12px 8px;text-align:left;border-bottom:1px solid #e4ebe4}.scroll{overflow:auto}nav{display:flex;gap:20px;flex-wrap:wrap}.notice{padding:16px;background:#fff4d6;border-radius:12px}.inline{display:inline}header form button{padding:6px 15px;background:transparent}.button{display:inline-block;background:#2c6145;color:white;text-decoration:none;padding:12px;border-radius:9px}'''
+STYLE='''*{box-sizing:border-box}body{margin:0;background:#eff3ee;color:#213b2d;font:16px system-ui,sans-serif}header{background:#203d2e;color:white;padding:22px max(5vw,18px)}main{max-width:1100px;margin:auto;padding:24px 18px}h1{font-size:28px}h2{font-size:21px}a{color:#246448}header a{color:white;margin-right:20px}.card{padding:22px;background:white;border-radius:16px;margin:16px 0;box-shadow:0 2px 7px #1a39200b}pre{white-space:pre-wrap;font:inherit;line-height:1.65}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}input,select,textarea,button{font:inherit;padding:12px;border:1px solid #cbd6cc;border-radius:9px;max-width:100%}label{display:block;margin:12px 0}input,select,textarea{display:block;width:100%;margin-top:5px}button{background:#2c6145;color:white;cursor:pointer}button.danger{background:#864735}small,.muted{color:#617568}.badge{display:inline-block;background:#e7efe7;padding:5px 10px;border-radius:20px}table{width:100%;border-collapse:collapse}td,th{padding:12px 8px;text-align:left;border-bottom:1px solid #e4ebe4}.scroll{overflow:auto}nav{display:flex;gap:20px;flex-wrap:wrap}.notice{padding:16px;background:#fff4d6;border-radius:12px}.inline{display:inline}header form button{padding:6px 15px;background:transparent}.button{display:inline-block;background:#2c6145;color:white;text-decoration:none;padding:12px;border-radius:9px}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}form.tile{margin:0;border:1px solid #e4ebe4;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:6px;background:#fbfdfb}.tile-label{color:#617568;font-size:14px;line-height:1.35}.tile-price{font-size:26px;line-height:1.2;color:#203d2e;margin:2px 0 10px}.tile-edit{display:flex;gap:8px;align-items:center;margin-top:auto}.tile-edit input{margin:0;padding:9px 10px}.tile-edit button{padding:9px 14px;white-space:nowrap}.rows{display:flex;flex-direction:column}form.row{display:grid;grid-template-columns:minmax(150px,1.5fr) minmax(120px,1fr) auto auto;gap:14px;align-items:center;margin:0;padding:14px 0;border-bottom:1px solid #eef2ee}form.row:last-child{border-bottom:none;padding-bottom:2px}.cell{display:block;margin:0}.cell-label{display:block;font-size:12px;color:#617568;margin-bottom:5px}form.row input{margin:0}.hint{display:block;font-size:12px;color:#617568;margin-top:5px}.avail{display:flex;gap:8px;align-items:center;margin:0;font-size:14px;color:#617568;white-space:nowrap}.avail input{width:auto;margin:0}@media(max-width:720px){form.row{grid-template-columns:1fr 1fr;gap:10px}.avail{grid-column:1/-1}form.row button{grid-column:1/-1}}'''
 def e(v):return escape(str(v),quote=True)
 def release_label() -> str:
     return os.getenv('RELEASE') or os.getenv('CORE_RELEASE') or 'dev'
@@ -47,8 +47,10 @@ def make_app(store,settings,secure=True):
             data=await request.post()
             if not hmac.compare_digest(str(data.get('csrf','')),s['csrf']):raise web.HTTPForbidden(text='Обновите страницу и повторите действие.')
         return s
-    def form(s,action,fields,label='Сохранить',danger=False):
-        return f'<form method="post" action="{e(action)}"><input type="hidden" name="csrf" value="{e(s["csrf"])}"><input type="hidden" name="operation" value="{secrets.token_hex(16)}">'+fields+f'<button class="{"danger" if danger else ""}">{e(label)}</button></form>'
+    def form(s,action,fields,label: str | None='Сохранить',danger=False,css=''):
+        classes=(' class="'+e(css)+'"' if css else '')
+        button='' if label is None else '<button class="'+('danger' if danger else '')+'">'+e(label)+'</button>'
+        return f'<form method="post" action="{e(action)}"{classes}><input type="hidden" name="csrf" value="{e(s["csrf"])}"><input type="hidden" name="operation" value="{secrets.token_hex(16)}">'+fields+button+'</form>'
     def navigation(s):return '<nav><a href="/">Заявки и календарь</a><a href="/new-booking">Создать бронь</a><a href="/guests">Гости</a><a href="/prices">Цены и услуги</a><a href="/catalog">Праздничные даты</a><a href="/archive">Прежние заявки</a><a href="/audit">Журнал действий</a>'+('<a href="/payments">Счета и чеки</a>' if settings.paykeeper_enabled else '')+'</nav>'+form(s,'/logout','','Выйти')
 
     async def login_page(request):
@@ -255,19 +257,23 @@ def make_app(store,settings,secure=True):
 
     async def prices(request):
         s=await auth(request);catalog,_,rates=await store.pricing()
-        body=navigation(s)+'<h1>Цены и услуги</h1><p>Цены хранятся в базе. Изменения применяются к новым бронированиям; у созданных броней стоимость остаётся в снимке.</p>'
-        body+='<div class="card"><h2>Аренда и доплаты</h2>'
+        body=navigation(s)+'<h1>Цены и услуги</h1>'
+        body+='<p class="muted">Цены живут в базе. Правка действует на новые брони: у уже созданных стоимость остаётся прежней.</p>'
+        body+='<div class="card"><h2>Аренда и доплаты</h2><div class="tiles">'
         for code,label in RATE_LABELS.items():
-            body+='<p>'+e(label)+' · '+e(rub(rates[code]))+'</p>'+form(s,'/prices/rate/'+code,'<label>Цена, ₽<input name="amount" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(rates[code]))+'" required></label>','Сохранить тариф')
-        body+='</div><div class="card scroll"><h2>Услуги</h2><table><tr><th>Услуга</th><th>Цена</th><th>Доступна</th></tr>'
-        for item in catalog.values():
-            body+='<tr><td>'+e(item['name'])+'</td><td>'+e(rub(item['price']))+'</td><td>'+('да' if item['available'] else 'нет')+'</td></tr>'
-        body+='</table></div>'
+            fields=('<span class="tile-label">'+e(label)+'</span>'
+                    '<strong class="tile-price">'+e(rub(rates[code]))+'</strong>'
+                    '<div class="tile-edit"><input name="amount" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(rates[code]))+'" aria-label="Новая цена" required><button>Сохранить</button></div>')
+            body+=form(s,'/prices/rate/'+code,fields,None,css='tile')
+        body+='</div></div>'
+        body+='<div class="card"><h2>Услуги</h2><p class="muted">Снимите галочку «доступна», чтобы услуга пропала из оформления, но осталась в истории.</p><div class="rows">'
         for code,item in catalog.items():
-            fields=('<label>Название<input name="name" maxlength="80" value="'+e(item['name'])+'" required></label>'
-                    '<label>Цена, ₽<input name="price" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(item['price']))+'" required></label>'
-                    '<label><input type="checkbox" name="available" value="yes"'+(' checked' if item['available'] else '')+'> Доступна для заказа</label>')
-            body+='<div class="card"><h2>'+e(item['name'])+'</h2>'+form(s,'/prices/service/'+code,fields,'Сохранить услугу')+'</div>'
+            fields=('<label class="cell"><span class="cell-label">Название</span><input name="name" maxlength="80" value="'+e(item['name'])+'" required></label>'
+                    '<label class="cell"><span class="cell-label">Цена, ₽</span><input name="price" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(item['price']))+'" required><span class="hint">сейчас '+e(rub(item['price']))+'</span></label>'
+                    '<label class="avail"><input type="checkbox" name="available" value="yes"'+(' checked' if item['available'] else '')+'> доступна</label>'
+                    '<button>Сохранить</button>')
+            body+=form(s,'/prices/service/'+code,fields,None,css='row')
+        body+='</div></div>'
         return web.Response(text=page('Цены и услуги',body),content_type='text/html')
     async def price_rate(request):
         s=await auth(request,True);data=await request.post();code=request.match_info['code']
