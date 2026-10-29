@@ -202,3 +202,23 @@ class Services(unittest.IsolatedAsyncioTestCase):
         request, created = await self.store.request_payment(ACTOR, ident, 'balance')
         self.assertTrue(created)
         self.assertEqual(request['amount'], 50000)
+
+    async def test_confirm_choice_returns_to_booking_with_the_topup(self):
+        """На экране услуги есть «Подтвердить выбор»: возвращает в бронь с доплатой."""
+        ident = await self.book(self.start())
+        paid = booking_total(await self.store.get(ACTOR, ident))
+        await self.store.pool.execute('UPDATE bookings SET paid=$2 WHERE id=$1', ident, paid)
+
+        screen = await self.screens.dispatch(ACTOR, 'svcplus:' + ident + ':birch')
+        labels = self.labels(screen)
+        self.assertIn('✅ Подтвердить выбор', labels)
+        self.assertIn('1 шт.', labels)
+        self.assertIn('−', labels)
+        self.assertIn('+', labels)
+
+        card = await self.screens.dispatch(ACTOR, 'svcdone:' + ident)
+        self.assertIn('Бронь № ' + ident, card.text)
+        self.assertIn('Веник берёзовый 1 шт. 500 ₽', card.text)
+        self.assertIn('Остаток: 500 ₽', card.text)
+        self.assertTrue(any('Доплатить за услуги — 500 ₽' in (label or '') for label in self.labels(card)))
+        self.assertEqual(card.notice, 'Выбор сохранён — смотрите сумму к доплате в брони.')

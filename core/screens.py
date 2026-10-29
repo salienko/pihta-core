@@ -339,7 +339,7 @@ class Screens:
             return [btn('🔗 Перейти к оплате ' + rub(linked['amount']), url=linked['url'])]
         return [btn(label, f'payrequest:{kind}:{ident}')]
 
-    async def show(self, actor, ident):
+    async def show(self, actor, ident, notice=''):
         r = await self.store.get(actor, ident)
         body = []
         if r['status'] in ('pending', 'confirmed') and r['paid'] < payment_total(r):
@@ -368,7 +368,7 @@ class Screens:
             body.append([btn('Отменить бронирование', 'cancelask:' + ident)])
         body += [[btn('☎️ Администратор', 'contact')],
                  [btn('← Назад', 'list:0:0' if r['status'] in ('pending', 'confirmed') else 'list:1:0')]]
-        return Screen(card(r), photo='booking', rows=rows(*body) + nav())
+        return Screen(card(r), photo='booking', rows=rows(*body) + nav(), notice=notice)
 
     async def services(self, actor, ident, notice=''):
         """Доп. услуги: категории (веники, аромапарение, принадлежности) и итог по брони."""
@@ -451,13 +451,15 @@ class Screens:
                  '', f'Итого по брони: {rub(total)}']
         if due:
             lines.append(f'К оплате: {rub(due)}')
-        body = [[btn('−', f'svcminus:{ident}:{code}'), btn('+', f'svcplus:{ident}:{code}')]]
+        body = [[btn('−', f'svcminus:{ident}:{code}'), btn(f'{qty} {unit}', f'svc:{ident}:{code}'),
+                 btn('+', f'svcplus:{ident}:{code}')]]
+        body.append([btn('✅ Подтвердить выбор', f'svcdone:{ident}')])
+        tail = []
         if qty:
-            body.append([btn('Очистить', f'svczero:{ident}:{code}')])
-        if due and r['paid']:
-            body.append(await self.pay_row(actor, ident, 'balance', '💳 Доплатить — ' + rub(due)))
-        body.append([btn('← К списку услуг', f'svccat:{ident}:{item["category"]}'
-                         if item.get('category') else 'services:' + ident)])
+            tail.append(btn('Очистить', f'svczero:{ident}:{code}'))
+        tail.append(btn('← К списку услуг', f'svccat:{ident}:{item["category"]}'
+                        if item.get('category') else 'services:' + ident))
+        body.append(tail)
         return Screen('\n'.join(lines), photo=code, rows=rows(*body) + nav(), notice=notice)
 
     async def change_service(self, actor, ident, code, delta):
@@ -741,6 +743,8 @@ class Screens:
                 return await self.services(actor, parts[1])
             if action == 'svccat':
                 return await self.service_category(actor, parts[1], parts[2])
+            if action == 'svcdone':
+                return await self.show(actor, parts[1], 'Выбор сохранён — смотрите сумму к доплате в брони.')
             if action == 'svc':
                 return await self.service_quantity(actor, parts[1], parts[2])
             if action in ('svcplus', 'svcminus'):
