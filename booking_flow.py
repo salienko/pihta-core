@@ -56,8 +56,8 @@ def change_guests(data, category, delta):
     kids = data.get('children', 0)
     if category == 'paid': paid += delta
     else: kids += delta
-    if paid < 0 or kids < 0 or not 1 <= paid + kids <= 8:
-        raise RuleError('От 1 до 8 гостей вместе с детьми.')
+    if paid < 1 or kids < 0 or not 1 <= paid + kids <= 8:
+        raise RuleError('Взрослый гость должен быть хотя бы один: от 1 до 8 гостей вместе с детьми.')
     data.update(guests=paid+kids, children=kids, consent=False)
     return data
 

@@ -130,12 +130,12 @@ class Screens:
             def count(category, delta, enabled):
                 label = '−' if delta < 0 else '+'
                 return btn(label, b('guest', category + ('+' if delta > 0 else '-')) if enabled
-                           else b('limit', 'min' if delta < 0 else 'max'))
+                           else b('limit', 'max' if delta > 0 else category + 'min'))
 
-            def picker(title, category, value, other):
+            def picker(category, value, other):
                 # Счётчик открывается только по нажатию на свою кнопку — как у услуг.
-                return rows([btn(title, b('noop'))],
-                            [count(category, -1, value > 0 and data['guests'] > 1),
+                return rows([count(category, -1, value > 1 if category == 'paid'
+                                   else value > 0 and data['guests'] > 1),
                              btn(f'{value} чел.', b('noop')),
                              count(category, 1, data['guests'] < 8)],
                             other)
@@ -143,15 +143,18 @@ class Screens:
             older = f'Гости старше 7 лет — {paid} чел.'
             younger = f'Гости младше 7 лет — {kids} чел.'
             if focus == 'kid':
-                body = picker('Гости младше 7 лет', 'kid', kids, [btn(older, b('focus', 'paid'))])
+                body = picker('kid', kids, [btn(older, b('focus', 'paid'))])
+                title = '👥 Гости младше 7 лет'
             elif focus == 'paid':
-                body = picker('Гости старше 7 лет', 'paid', paid, [btn(younger, b('focus', 'kid'))])
+                body = picker('paid', paid, [btn(younger, b('focus', 'kid'))])
+                title = '👥 Гости старше 7 лет'
             else:
                 body = rows([btn(older, b('focus', 'paid'))], [btn(younger, b('focus', 'kid'))])
+                title = '👥 Уточните какое кол-во гостей планирует отдыхать?'
             body += rows([btn('📅 Выбрать дату', b('next', 'date'))], [btn('← Назад', b('back', 'phone'))])
-            text = (f'👥 Уточните какое кол-во гостей планирует отдыхать?\n\n'
-                    f'Всего гостей: {data["guests"]} чел.\n\n'
-                    + ('Укажите кол-во гостей ↓' if focus else 'Нажмите, чтобы указать кол-во ↓'))
+            text = (f'{title}\n\nВсего гостей: {data["guests"]} чел.\n'
+                    f'Старше 7 лет: {paid} чел.\nМладше 7 лет: {kids} чел.\n\n'
+                    + ('Укажите кол-во ↓' if focus else 'Нажмите, чтобы указать кол-во ↓'))
             return Screen(text, photo='guests', rows=body + footer, state=state)
         if state == 'date':
             today = datetime.now(TZ).date()
@@ -891,9 +894,10 @@ class Screens:
             new = state
             if action in ('noop', 'limit'):
                 if action == 'limit':
-                    return Screen('Вместимость — до 8 гостей вместе с детьми.' if value == 'max'
-                                  else 'Укажите хотя бы одного гостя.',
-                                  rows=rows([btn('← Назад', 'resume')]) + nav())
+                    text = ('Вместимость — до 8 гостей вместе с детьми.' if value == 'max'
+                            else 'Взрослый гость должен быть хотя бы один.' if value == 'paidmin'
+                            else 'Детей может быть и ни одного — это нормально.')
+                    return Screen(text, rows=rows([btn('← Назад', 'resume')]) + nav())
                 return Screen(nothing=True)
             if action in ('discardask', 'resetask', 'discard', 'reset') and state in ('phone_contact', 'profile_contact'):
                 d = await self.store.draft(actor, token)
