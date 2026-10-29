@@ -27,6 +27,7 @@ from booking_domain import TZ, estimate, RuleError
 from paykeeper import ProviderError
 from paykeeper_store import RECEIPT_ATTEMPTS
 from admin_web import make_app
+from final_receipts import FinalReceiptStore
 
 URL = os.getenv('TEST_DATABASE_URL', '')
 PHONE = '+79001234567'
@@ -289,3 +290,26 @@ class PaymentNotifications(Setup):
         self.assertIsNotNone(row)
         self.assertEqual(row['recipient'], 2)
         self.assertIn('Оплата принята', row['text'])
+
+
+class QuietSettlementTest(unittest.IsolatedAsyncioTestCase):
+    """Тихий режим итоговых чеков: документ оформляется, сообщений нет."""
+
+    class Store(FinalReceiptStore):
+        def __init__(self, quiet):
+            self.settings = SimpleNamespace(paykeeper_settlement_quiet=quiet)
+            self.sent = []
+
+        async def enqueue(self, db, row, event, text, recipients):
+            self.sent.append((event, tuple(recipients)))
+
+    async def test_quiet_mode_keeps_silence(self):
+        store = self.Store(True)
+        await store.notify_settlement(None, {}, 'pkfinal:ABC', 'Услуга оказана.', [11])
+        await store.notify_settlement(None, {}, 'pkfinalstaff:ABC', 'Итоговый чек сформирован.', [1, 2])
+        self.assertEqual(store.sent, [])
+
+    async def test_loud_mode_still_notifies(self):
+        store = self.Store(False)
+        await store.notify_settlement(None, {}, 'pkfinal:ABC', 'Услуга оказана.', [11])
+        self.assertEqual(store.sent, [('pkfinal:ABC', (11,))])

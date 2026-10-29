@@ -28,6 +28,9 @@ class Settings:
     paykeeper_full_type: str = ''
     paykeeper_balance_type: str = ''
     paykeeper_settlement_enabled: bool = False
+    # Quiet mode: form the settlement receipt and keep its link, but send no
+    # messages to the guest or the admins.
+    paykeeper_settlement_quiet: bool = False
 
 
 def load():
@@ -79,4 +82,5 @@ def load():
                     os.getenv('DATABASE_URL', '').strip(),
                     content, rules, hashlib.sha256(rules.encode()).hexdigest(), web_url,
                     enabled,pk_url,pk_user,pk_password,pk_secret,tax,*types,
-                    paykeeper_settlement_enabled=os.getenv('PAYKEEPER_SETTLEMENT_ENABLED','0')=='1')
+                    paykeeper_settlement_enabled=os.getenv('PAYKEEPER_SETTLEMENT_ENABLED','0')=='1',
+                    paykeeper_settlement_quiet=os.getenv('PAYKEEPER_SETTLEMENT_QUIET','0')=='1')

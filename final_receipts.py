@@ -6,6 +6,12 @@ from booking_payments import total
 
 
 class FinalReceiptStore:
+    async def notify_settlement(self, db, row, event, text, recipients):
+        """Итоговый чек в тихом режиме: документ и ссылка есть, сообщений нет."""
+        if self.settings.paykeeper_settlement_quiet:
+            return
+        await self.enqueue(db, row, event, text, recipients)
+
     async def request_final_receipt(self, actor, ident):
         self.admin(actor)
         if not self.settings.paykeeper_settlement_enabled:raise RuleError('Итоговые чеки временно отключены.')
@@ -39,7 +45,7 @@ class FinalReceiptStore:
             for old in stale:
                 from booking_store import unpack
                 row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',old['booking_id']))
-                await self.enqueue(db,row,'pkfinalerror:'+old['booking_id'],'⚠️ Отправка итогового чека была прервана. Требуется сверка с платёжным сервисом, повторная выдача остановлена.',self.settings.admin_ids)
+                await self.notify_settlement(db,row,'pkfinalerror:'+old['booking_id'],'⚠️ Отправка итогового чека была прервана. Требуется сверка с платёжным сервисом, повторная выдача остановлена.',self.settings.admin_ids)
             r=await db.fetchrow("SELECT * FROM paykeeper_settlements WHERE state IN ('queued','pending') AND next_check_at<=now() ORDER BY next_check_at LIMIT 1 FOR UPDATE")
             if not r:return False
             await db.execute("UPDATE paykeeper_settlements SET state=CASE WHEN state='queued' THEN 'sending' ELSE state END,next_check_at=now()+interval '2 minutes' WHERE booking_id=$1",r['booking_id'])
@@ -56,15 +62,15 @@ class FinalReceiptStore:
                     from booking_store import unpack
                     row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',r['booking_id']))
                     if result['state']=='success':
-                        await self.enqueue(db,row,'pkfinal:'+r['booking_id'],'Услуга оказана. Итоговый чек доступен по кнопке ниже. Повторная оплата не требуется.',[row['telegram_id']])
-                    await self.enqueue(db,row,'pkfinalstaff:'+r['booking_id'],'Итоговый чек: '+('сформирован.' if result['state']=='success' else 'ошибка кассы, требуется проверка.'),self.settings.admin_ids)
+                        await self.notify_settlement(db,row,'pkfinal:'+r['booking_id'],'Услуга оказана. Итоговый чек доступен по кнопке ниже. Повторная оплата не требуется.',[row['telegram_id']])
+                    await self.notify_settlement(db,row,'pkfinalstaff:'+r['booking_id'],'Итоговый чек: '+('сформирован.' if result['state']=='success' else 'ошибка кассы, требуется проверка.'),self.settings.admin_ids)
                     await self.audit(db,r['booking_id'],0,'settlement_'+result['state'])
         except Exception:
             async with self.tx() as db:
                 await db.execute("UPDATE paykeeper_settlements SET state=CASE WHEN receipt_id IS NULL THEN 'uncertain' ELSE state END,last_error='provider_check_required' WHERE booking_id=$1",r['booking_id'])
                 from booking_store import unpack
                 row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',r['booking_id']))
-                await self.enqueue(db,row,'pkfinalerror:'+r['booking_id'],'⚠️ Итоговый чек требует сверки с платёжным сервисом. Не создавайте повторный чек с новым ключом.',self.settings.admin_ids)
+                await self.notify_settlement(db,row,'pkfinalerror:'+r['booking_id'],'⚠️ Итоговый чек требует сверки с платёжным сервисом. Не создавайте повторный чек с новым ключом.',self.settings.admin_ids)
         return True
 
     async def reconcile_settlement(self,actor,ident,receipt_id):
