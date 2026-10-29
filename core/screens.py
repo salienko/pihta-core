@@ -132,22 +132,23 @@ class Screens:
                 return btn(label, b('guest', category + ('+' if delta > 0 else '-')) if enabled
                            else b('limit', 'max' if delta > 0 else category + 'min'))
 
-            def picker(category, value, other):
-                # Счётчик открывается только по нажатию на свою кнопку — как у услуг.
-                return rows([count(category, -1, value > 1 if category == 'paid'
-                                   else value > 0 and data['guests'] > 1),
-                             btn(f'{value} чел.', b('noop')),
-                             count(category, 1, data['guests'] < 8)],
-                            other)
+            def counter(category, value):
+                # Счётчик стоит под своей кнопкой: видно, кого именно считаем.
+                return [count(category, -1, value > 1 if category == 'paid'
+                              else value > 0 and data['guests'] > 1),
+                        btn(f'{value} чел.', b('noop')),
+                        count(category, 1, data['guests'] < 8)]
 
             older = f'Гости старше 7 лет — {paid} чел.'
             younger = f'Гости младше 7 лет — {kids} чел.'
-            if focus == 'kid':
-                body = picker('kid', kids, [btn(older, b('focus', 'paid'))])
-                title = '👥 Гости младше 7 лет'
-            elif focus == 'paid':
-                body = picker('paid', paid, [btn(younger, b('focus', 'kid'))])
+            if focus == 'paid':
+                body = rows([btn(older, b('focus', ''))], counter('paid', paid),
+                            [btn(younger, b('focus', 'kid'))])
                 title = '👥 Гости старше 7 лет'
+            elif focus == 'kid':
+                body = rows([btn(older, b('focus', 'paid'))], [btn(younger, b('focus', ''))],
+                            counter('kid', kids))
+                title = '👥 Гости младше 7 лет'
             else:
                 body = rows([btn(older, b('focus', 'paid'))], [btn(younger, b('focus', 'kid'))])
                 title = '👥 Уточните какое кол-во гостей планирует отдыхать?'
