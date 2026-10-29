@@ -23,7 +23,7 @@ def money(value):
     except (InvalidOperation,ValueError,TypeError):raise RuleError('Введите сумму в рублях, не более двух знаков после точки.')
 def rubles(kopecks):return f'{kopecks//100}.{kopecks%100:02}'
 
-ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки','service_price':'Изменена услуга и её цена','rate_price':'Изменён тариф аренды','receipt_recheck':'Перепроверка чека в ОФД','guest_attach':'Аккаунт привязан к гостю','guest_detach':'Аккаунт отвязан от гостя'}
+ACTION_NAMES={'staff_submitted':'Создана телефонная бронь','reserve_cancelled':'Бронь отменена по сроку оплаты','paykeeper_invoice_requested':'Запрошен счёт на оплату','staff_invoice_requested':'Сотрудник запросил счёт','paykeeper_payment':'Получен платёж','settlement_requested':'Подтверждено оказание услуги, запрошен итоговый чек','settlement_success':'Итоговый чек сформирован','settlement_failed':'Ошибка итогового чека','settlement_reconciled':'Итоговый чек привязан после сверки','service_price':'Изменена услуга и её цена','rate_price':'Изменён тариф аренды','receipt_recheck':'Перепроверка чека в ОФД','guest_attach':'Аккаунт привязан к гостю','guest_detach':'Аккаунт отвязан от гостя','services_changed':'Изменены доп. услуги','service_added':'Добавлена услуга в ассортимент'}
 # Состояние чека в ОФД. missing и failed — окончательные: опросы ОФД остановлены,
 # ссылка появится только после ручной перепроверки.
 RECEIPT_STATES={'waiting':'чек запрошен у ОФД','formed':'чек получен','missing':'чек не сформирован','failed':'чек не удалось проверить в ОФД'}
@@ -274,7 +274,29 @@ def make_app(store,settings,secure=True):
                     '<button>Сохранить</button>')
             body+=form(s,'/prices/service/'+code,fields,None,css='row')
         body+='</div></div>'
+        body+=('<div class="card"><h2>Добавить услугу</h2>'
+               '<p class="muted">Новая позиция сразу появится у гостей в «Доп. услуги». '
+               'Код — латиницей, он не меняется: по нему услуга хранится в бронях.</p>'
+               + form(s,'/prices/service-add',
+                      '<div class="rows"><label class="cell"><span class="cell-label">Код</span>'
+                      '<input name="code" maxlength="20" placeholder="например broom" required></label>'
+                      '<label class="cell"><span class="cell-label">Название</span>'
+                      '<input name="name" maxlength="80" placeholder="Веник пихтовый" required></label>'
+                      '<label class="cell"><span class="cell-label">Цена, ₽</span>'
+                      '<input name="price" type="number" min="0.01" max="1000000" step="0.01" required></label>'
+                      '<label class="cell"><span class="cell-label">Единица</span>'
+                      '<input name="unit" maxlength="20" value="шт."></label></div>',
+                      'Добавить в ассортимент')+'</div>')
         return web.Response(text=page('Цены и услуги',body),content_type='text/html')
+    async def add_service(request):
+        s=await auth(request,True);data=await request.post()
+        name=str(data.get('name','')).strip()
+        if not 1<=len(name)<=80:raise RuleError('Название услуги: от 1 до 80 символов.')
+        unit=str(data.get('unit','')).strip() or 'шт.'
+        if len(unit)>20:raise RuleError('Единица измерения: до 20 символов.')
+        await store.add_service(s['actor'],str(data.get('code','')).strip().lower(),name,
+                                money(data.get('price','')),unit)
+        raise web.HTTPFound('/prices')
     async def price_rate(request):
         s=await auth(request,True);data=await request.post();code=request.match_info['code']
         await store.set_rate(s['actor'],code,money(data.get('amount','')))
@@ -358,7 +380,7 @@ def make_app(store,settings,secure=True):
     from admin_booking import mount_staff_booking
     mount_staff_booking(app,store,auth,form,page,e,navigation)
     app.add_routes([web.get('/payments',payments),web.post('/payments',payment_create),web.post('/payments/{id}/resolve',payment_resolve),web.post('/receipt/{id}/recheck',receipt_recheck),web.get('/payments.js',payment_js)])
-    app.add_routes([web.get('/style.css',style),web.get('/health',health),web.get('/login',login_page),web.get('/login.js',login_js),web.post('/login',login),web.post('/logout',logout),web.get('/',home),web.get('/guests',guests),web.get('/guest/{id}',guest_detail),web.post('/guest/{id}/attach',guest_attach),web.post('/guest/{id}/detach',guest_detach),web.get('/booking/{id}',detail),web.post('/booking/{id}/{action}',action),web.post('/block',block),web.post('/unblock/{id}',unblock),web.get('/archive',archive),web.get('/audit',audit),web.get('/catalog',catalog),web.post('/holiday',holiday),web.post('/holiday/remove',remove_holiday),web.get('/prices',prices),web.post('/prices/rate/{code}',price_rate),web.post('/prices/service/{code}',price_service)])
+    app.add_routes([web.get('/style.css',style),web.get('/health',health),web.get('/login',login_page),web.get('/login.js',login_js),web.post('/login',login),web.post('/logout',logout),web.get('/',home),web.get('/guests',guests),web.get('/guest/{id}',guest_detail),web.post('/guest/{id}/attach',guest_attach),web.post('/guest/{id}/detach',guest_detach),web.get('/booking/{id}',detail),web.post('/booking/{id}/{action}',action),web.post('/block',block),web.post('/unblock/{id}',unblock),web.get('/archive',archive),web.get('/audit',audit),web.get('/catalog',catalog),web.post('/holiday',holiday),web.post('/holiday/remove',remove_holiday),web.get('/prices',prices),web.post('/prices/rate/{code}',price_rate),web.post('/prices/service/{code}',price_service),web.post('/prices/service-add',add_service)])
     return app
 
 def re_full_token(value):

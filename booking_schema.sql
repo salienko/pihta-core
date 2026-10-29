@@ -124,6 +124,10 @@ CREATE TABLE IF NOT EXISTS paykeeper_settlements(
 );
 ALTER TABLE outbox ALTER COLUMN booking_id DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS standalone_outbox_event ON outbox(recipient,event) WHERE booking_id IS NULL;
+-- Доп. услуги, добавленные в уже оформленную бронь. Снимок брони (data, estimate)
+-- неизменяем, поэтому дополнительный набор хранится отдельными полями.
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS extras jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS extras_total bigint NOT NULL DEFAULT 0 CHECK(extras_total>=0);
 CREATE OR REPLACE FUNCTION protect_snapshot() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF ROW(NEW.id,NEW.telegram_id,NEW.draft_token,NEW.starts_at,NEW.ends_at,NEW.blocked_until,NEW.data,NEW.estimate,NEW.rules_hash,NEW.created_at) IS DISTINCT FROM ROW(OLD.id,OLD.telegram_id,OLD.draft_token,OLD.starts_at,OLD.ends_at,OLD.blocked_until,OLD.data,OLD.estimate,OLD.rules_hash,OLD.created_at) THEN RAISE EXCEPTION 'booking snapshot is immutable'; END IF;

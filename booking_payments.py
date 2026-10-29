@@ -3,13 +3,14 @@ import re
 import secrets
 from urllib.parse import urlsplit
 from datetime import timedelta
-from booking_domain import RuleError, rub, card
+from booking_domain import RuleError, rub, card, booking_total
 
 DEPOSIT = 200000
 
 
 def total(row):
-    return row['actual_total'] if row.get('actual_total') is not None else row['estimate']['total']
+    """Сумма брони с учётом доп. услуг, добавленных после оформления."""
+    return booking_total(row)
 
 
 def payment_url(text):

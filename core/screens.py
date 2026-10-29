@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from booking_domain import (TZ, SLOTS, LABELS, RuleError, estimate, card, can_cancel,
-                            validate_start, clean_name, normalize_phone, horizon, rub)
+                            validate_start, clean_name, normalize_phone, horizon, rub,
+                            booking_total)
 from booking_flow import (VERSION, prepare, require, first_missing, change_guests,
                           callback, collected_fields, accept_field)
 from booking_payments import total as payment_total
@@ -342,6 +343,8 @@ class Screens:
                     'SELECT 1 FROM paykeeper_invoices WHERE request_id=$1', linked['id']))
                 check_label = 'Проверить оплату ' + rub(linked['amount']) if automatic else '✅ Уже оплатил'
                 body.append([btn(check_label, ('paycheck:' if automatic else 'payreport:') + linked['id'])])
+        if r['status'] in ('pending', 'confirmed') and r['ends_at'] > datetime.now(TZ):
+            body.append([btn('🧺 Доп. услуги', 'services:' + ident)])
         if r['status'] in ('pending', 'confirmed') and r['paid'] < payment_total(r):
             body.append([btn('✏️ Изменить телефон', 'editphone:' + ident)])
         if self.settings.paykeeper_enabled:
@@ -351,6 +354,62 @@ class Screens:
         body += [[btn('☎️ Администратор', 'contact')],
                  [btn('← Назад', 'list:0:0' if r['status'] in ('pending', 'confirmed') else 'list:1:0')]]
         return Screen(card(r), photo='booking', rows=rows(*body) + nav())
+
+    async def services(self, actor, ident, notice=''):
+        """Доп. услуги в действующей брони: список услуг с отметкой выбранных."""
+        r = await self.store.get(actor, ident)
+        if r['status'] not in ('pending', 'confirmed') or r['ends_at'] <= datetime.now(TZ):
+            raise RuleError('Доп. услуги доступны только в действующей брони.')
+        catalog, _, _ = await self.store.pricing()
+        extras = dict(r.get('extras') or {})
+        body = []
+        for code, item in catalog.items():
+            if not item.get('available', True):
+                continue
+            qty = int((extras.get(code) or {}).get('qty', 0))
+            label = ('✓ ' if qty else '') + item['name'] + ' · ' + rub(item['price'])
+            if qty:
+                label += f' × {qty}'
+            body.append([btn(label, f'svc:{ident}:{code}')])
+        total = booking_total(r)
+        due = max(0, total - r['paid'])
+        lines = ['🧺 Доп. услуги', '', 'Выберите услугу и укажите количество.']
+        if extras:
+            lines += ['', f'Итого по брони: {rub(total)}',
+                      ('К оплате: ' + rub(due)) if due else '✅ Стоимость оплачена полностью']
+        else:
+            lines += ['', f'Итого по брони: {rub(total)}']
+        body.append([btn('← Назад', 'open:' + ident)])
+        return Screen('\n'.join(lines), photo='booking', rows=rows(*body) + nav(), notice=notice)
+
+    async def service_quantity(self, actor, ident, code, notice=''):
+        """Экран одной услуги: плюс, минус и текущее количество."""
+        r = await self.store.get(actor, ident)
+        catalog, _, _ = await self.store.pricing()
+        item = catalog.get(code)
+        if not item or not item.get('available', True):
+            raise RuleError('Услуга недоступна.')
+        extras = dict(r.get('extras') or {})
+        qty = int((extras.get(code) or {}).get('qty', 0))
+        unit = item.get('unit') or 'шт.'
+        lines = [item['name'], '', f'Цена: {rub(item["price"])} за {unit}',
+                 f'Выбрано: {qty} {unit}' if qty else 'Не выбрано',
+                 '', f'Итого по брони: {rub(booking_total(r))}']
+        body = [[btn('➖ Убрать одну', f'svcminus:{ident}:{code}'),
+                 btn('➕ Добавить', f'svcplus:{ident}:{code}')]]
+        if qty:
+            body.append([btn('✖ Убрать совсем', f'svczero:{ident}:{code}')])
+        body.append([btn('← К списку услуг', 'services:' + ident)])
+        return Screen('\n'.join(lines), photo='booking', rows=rows(*body) + nav(), notice=notice)
+
+    async def change_service(self, actor, ident, code, delta):
+        """Применяет изменение количества и показывает экран услуги заново."""
+        r = await self.store.get(actor, ident)
+        extras = dict(r.get('extras') or {})
+        cart = {key: int((value or {}).get('qty', 0)) for key, value in extras.items()}
+        cart[code] = max(0, cart.get(code, 0) + delta)
+        await self.store.set_booking_services(actor, ident, cart)
+        return await self.service_quantity(actor, ident, code, 'Количество обновлено.')
 
     async def admin_link(self, actor):
         self.store.admin(actor)
@@ -617,6 +676,20 @@ class Screens:
                 return await self.listing(actor, bool(int(parts[1])), int(parts[2]))
             if action == 'open':
                 return await self.show(actor, parts[1])
+            if action == 'services':
+                return await self.services(actor, parts[1])
+            if action == 'svc':
+                return await self.service_quantity(actor, parts[1], parts[2])
+            if action in ('svcplus', 'svcminus'):
+                return await self.change_service(actor, parts[1], parts[2],
+                                                 1 if action == 'svcplus' else -1)
+            if action == 'svczero':
+                r = await self.store.get(actor, parts[1])
+                extras = dict(r.get('extras') or {})
+                extras.pop(parts[2], None)
+                cart = {key: int((value or {}).get('qty', 0)) for key, value in extras.items()}
+                await self.store.set_booking_services(actor, parts[1], cart)
+                return await self.service_quantity(actor, parts[1], parts[2], 'Услуга убрана.')
             if action == 'legacy':
                 r = await self.store.legacy(actor, parts[1])
                 if not r:

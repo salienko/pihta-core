@@ -105,7 +105,7 @@ class WorkerLock:
 def unpack(row):
     if not row:return None
     d=dict(row)
-    for key in ('data','estimate','detail'):
+    for key in ('data','estimate','detail','extras'):
         if key in d and isinstance(d[key],str):d[key]=json.loads(d[key])
     return d
 
@@ -219,6 +219,18 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
     async def service(self,code):
         return await self.pool.fetchrow('SELECT * FROM service_settings WHERE code=$1',code)
 
+    async def add_service(self,actor,code,name,price,unit='шт.'):
+        """Новая услуга в ассортименте: админ задаёт код, название и цену."""
+        if not re.fullmatch('[a-z][a-z0-9_]{1,19}',code):
+            raise RuleError('Код услуги: латинские буквы, цифры и подчёркивание, от 2 до 20 символов.')
+        async with self.tx() as db:
+            if await db.fetchval('SELECT 1 FROM service_settings WHERE code=$1',code):
+                raise RuleError('Услуга с таким кодом уже есть.')
+            order=await db.fetchval('SELECT COALESCE(max(sort_order),0)+1 FROM service_settings')
+            await db.execute('INSERT INTO service_settings(code,name,price,unit,available,sort_order) '
+                             'VALUES($1,$2,$3,$4,true,$5)',code,name,price,unit,order)
+            await self.audit(db,None,actor,'service_added',dict(code=code,name=name,price=price))
+
     async def set_service(self,actor,code,name,price,available):
         """Правка услуги из админки. Снимки существующих броней не меняются."""
         self.admin(actor)
@@ -322,6 +334,41 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
                              ident,phone,actor)
             await self.audit(db,ident,actor,'phone_changed',{'phone':phone})
 
+    async def set_booking_services(self,actor,ident,cart):
+        """Гость меняет доп. услуги в своей брони: состав и количество.
+
+        Снимок брони (data, estimate) неизменяем, поэтому дополнительный набор
+        лежит в отдельных полях extras/extras_total. Менять можно, пока сеанс не
+        закончился; сумма не может опуститься ниже уже внесённых денег.
+        """
+        async with self.tx() as db:
+            await self.expire(db,await self.clock(db))
+            r=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1 FOR UPDATE',ident))
+            if not r or not await self.owns(db,actor,r['telegram_id']):raise RuleError('Бронь недоступна.')
+            if r['status'] not in ('pending','confirmed') or r['no_show']:
+                raise RuleError('Доп. услуги доступны только в действующей брони.')
+            if r['ends_at']<=await self.clock(db):
+                raise RuleError('Сеанс закончился: услуги уже не изменить.')
+            catalog,_,_=await self.pricing(db)
+            extras={}
+            for code,qty in cart.items():
+                qty=int(qty)
+                if qty<=0:continue
+                item=catalog.get(code)
+                if not item or not item.get('available',True):
+                    raise RuleError('Услуга недоступна. Откройте список услуг заново.')
+                if qty>100:raise RuleError('Не более 100 единиц одной услуги.')
+                extras[code]=dict(qty=qty,price=item['price'],name=item['name'],
+                                  unit=item.get('unit') or 'шт.')
+            amount=sum(e['price']*e['qty'] for e in extras.values())
+            if r['estimate']['total']+amount<r['paid']:
+                raise RuleError('Сумма станет меньше внесённой оплаты. Убрать оплаченные услуги может администратор.')
+            await db.execute('UPDATE bookings SET extras=$2::jsonb,extras_total=$3,revision=revision+1 WHERE id=$1',
+                             ident,json.dumps(extras,ensure_ascii=False),amount)
+            await self.audit(db,ident,actor,'services_changed',
+                             {'extras':extras,'total':r['estimate']['total']+amount})
+            return amount
+
     async def pending_input(self,actor):
         return await self.pool.fetchrow(
             'SELECT * FROM pending_inputs WHERE actor=$1 AND expires_at>now()',actor)
@@ -394,7 +441,7 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
                 await db.execute("UPDATE payment_requests SET state='superseded',revision=revision+1 WHERE booking_id=$1 AND state IN ('requested','linked','reported')",ident)
                 await db.execute("UPDATE outbox SET disabled=true WHERE booking_id=$1 AND delivered_at IS NULL AND (event LIKE 'payreq:%' OR event LIKE 'paylink:%' OR event LIKE 'payreported:%')",ident)
             elif kind=='actual':
-                if type(guests) is not int or not 1<=guests<=8 or type(total) is not int or total<row['estimate']['total']:raise RuleError('1–8 гостей; сумма не меньше суммы исходной брони.')
+                if type(guests) is not int or not 1<=guests<=8 or type(total) is not int or total<row['estimate']['total']+int(row.get('extras_total') or 0):raise RuleError('1–8 гостей; сумма не меньше суммы исходной брони.')
                 await db.execute('UPDATE bookings SET actual_guests=$1,actual_total=$2,revision=revision+1 WHERE id=$3',guests,total,ident)
             else:
                 if row['starts_at']>await self.clock(db) or row['status'] not in ('confirmed','completed'):raise RuleError('Неявка отмечается после начала подтверждённого сеанса.')

@@ -59,12 +59,23 @@ def payment_confirmation(row):
 def can_cancel(status, start, clock):
     return status == 'pending'
 
+def booking_total(row):
+    """Сумма брони: снимок плюс доп. услуги, добавленные после оформления.
+
+    actual_total выставляет администратор при окончательном расчёте — тогда
+    именно он и является суммой.
+    """
+    if row.get('actual_total') is not None:
+        return row['actual_total']
+    return row['estimate']['total'] + int(row.get('extras_total') or 0)
+
+
 def card(row, personal=True):
     d,q=row['data'],row['estimate']
     start=row['starts_at'].astimezone(TZ);end=row['ends_at'].astimezone(TZ)
     icons={'pending':'⏳','confirmed':'✅','cancelled':'✕','rejected':'✕','expired':'✕','completed':'✓','draft':'✏️'}
     min_age=d.get('guest_min_paid_age',7)
-    due=(row.get('actual_total') if row.get('actual_total') is not None else q['total'])-row.get('paid',0)
+    due=(booking_total(row))-row.get('paid',0)
     status_label='Бронь подтверждена, требуется доплата' if row['status']=='confirmed' and due>0 else LABELS[row['status']]
     lines=[f"Бронь № {row['id']}",f"{icons[row['status']]} {status_label}",'',f'📅 {start:%d.%m.%Y} · {start:%H:%M}–{end:%H:%M}',
            'Время московское','',f"Кол-во гостей: {d['guests']}",f"Гости от {min_age} лет: {d['guests']-d['children']}",
@@ -72,8 +83,12 @@ def card(row, personal=True):
     if q['guest_extra']:lines.append(f"Доплата за гостей: {rub(q['guest_extra'])}")
     # Historical snapshots can contain old goods; display them without enabling orders.
     lines += [f"{i['name']} × {i['quantity']} — {rub(i['total'])}" for i in q['items']]
-    lines += [f"Итого по брони: {rub(q['total'])}"]
-    actual=row.get('actual_total');total=actual if actual is not None else q['total']
+    for code in sorted(row.get('extras') or {}):
+        extra=row['extras'][code]
+        lines.append(f"{extra.get('name',code)} × {int(extra['qty'])} — "
+                     f"{rub(int(extra['price'])*int(extra['qty']))}")
+    actual=row.get('actual_total');total=actual if actual is not None else q['total']+int(row.get('extras_total') or 0)
+    lines += [f"Итого по брони: {rub(total)}"]
     if actual is not None:lines.append('Фактический расчёт: '+rub(actual))
     paid=row.get('paid',0)
     if paid>=total:lines.append('✅ Внесена вся стоимость')
