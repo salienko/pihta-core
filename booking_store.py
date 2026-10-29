@@ -126,7 +126,7 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
                 # Категории услуг дописываем при каждом старте: старые строки
                 # остаются без них, и гость не увидел бы разделы.
                 async with pool.acquire() as db:
-                    await store.seed_prices(db)
+                    await store.sync_services(db)
         except BaseException:
             await pool.close();raise
         return store
@@ -199,6 +199,21 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
             if guest:return dict(name=guest['name'],phone=guest['phone'])
             return unpack(await self.pool.fetchrow('SELECT * FROM profiles WHERE telegram_id=$1',actor))
         await self.pool.execute('INSERT INTO profiles VALUES($1,$2,$3) ON CONFLICT(telegram_id) DO UPDATE SET name=$2,phone=$3',actor,clean_name(name),normalize_phone(phone))
+
+    async def sync_services(self,db):
+        """Два запроса вместо цикла: новые услуги из content.json и пустые категории."""
+        items=self.settings.content['services']
+        codes=[i['code'] for i in items]
+        await db.execute('INSERT INTO service_settings(code,name,price,unit,category,available,sort_order) '
+                         'SELECT * FROM unnest($1::text[],$2::text[],$3::bigint[],$4::text[],$5::text[],'
+                         '$6::boolean[],$7::int[]) ON CONFLICT(code) DO NOTHING',
+                         codes,[i['name'] for i in items],[i['price'] for i in items],
+                         [i.get('unit','шт.') for i in items],[i.get('category','') for i in items],
+                         [True]*len(items),list(range(len(items))))
+        await db.execute('UPDATE service_settings s SET category=v.category '
+                         'FROM unnest($1::text[],$2::text[]) AS v(code,category) '
+                         "WHERE s.code=v.code AND s.category=''",
+                         codes,[i.get('category','') for i in items])
 
     async def seed_prices(self,db):
         """Первый запуск: цены услуг берём из content.json, тарифы аренды — из DEFAULT_RATES."""

@@ -150,7 +150,7 @@ class Services(unittest.IsolatedAsyncioTestCase):
     async def test_existing_services_get_categories_on_start(self):
         """Старые строки без категории дозаполняются при старте ядра."""
         await self.store.pool.execute("UPDATE service_settings SET category=''")
-        await self.store.seed_prices(self.store.pool)
+        await self.store.sync_services(self.store.pool)
         self.assertEqual((await self.store.service('birch'))['category'], 'brooms')
         self.assertEqual((await self.store.service('slippers'))['category'], 'bath')
 
