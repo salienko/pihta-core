@@ -147,6 +147,13 @@ class Services(unittest.IsolatedAsyncioTestCase):
         listing = await self.screens.dispatch(ACTOR, 'services:' + ident)
         self.assertIn('🧹 Веники · выбрано 1', self.labels(listing))
 
+    async def test_existing_services_get_categories_on_start(self):
+        """Старые строки без категории дозаполняются при старте ядра."""
+        await self.store.pool.execute("UPDATE service_settings SET category=''")
+        await self.store.seed_prices(self.store.pool)
+        self.assertEqual((await self.store.service('birch'))['category'], 'brooms')
+        self.assertEqual((await self.store.service('slippers'))['category'], 'bath')
+
     async def test_admin_adds_service(self):
         csrf = await self.admin_login()
         await self.client.get('/prices')

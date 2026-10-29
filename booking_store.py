@@ -122,9 +122,14 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
                     await db.execute('SELECT pg_advisory_xact_lock($1)',LOCK)
                     await db.execute(f'CREATE SCHEMA IF NOT EXISTS {schema}')
                     await db.execute(Path(__file__).with_name('booking_schema.sql').read_text(encoding='utf-8'))
+                store=cls(settings,pool)
+                # Категории услуг дописываем при каждом старте: старые строки
+                # остаются без них, и гость не увидел бы разделы.
+                async with pool.acquire() as db:
+                    await store.seed_prices(db)
         except BaseException:
             await pool.close();raise
-        return cls(settings,pool)
+        return store
 
     @asynccontextmanager
     async def tx(self):
