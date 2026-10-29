@@ -132,11 +132,12 @@ class Prices(unittest.IsolatedAsyncioTestCase):
         csrf = await self.login()
         self.assertEqual((await self.client.get('/prices')).status, 200)
         response = await self.post('/prices/service/birch',
-                                   {'name': 'Веник берёзовый', 'price': '700.00'}, csrf)
+                                   {'name': 'Веник берёзовый', 'price': '700.00', 'category': 'aroma'}, csrf)
         self.assertEqual(response.status, 302)
         self.assertEqual(response.headers['Location'], '/prices')
         row = await self.store.service('birch')
         self.assertEqual(row['price'], 70000)
+        self.assertEqual(row['category'], 'aroma')
         self.assertFalse(row['available'])
         self.assertEqual(await self.store.pool.fetchval("SELECT count(*) FROM audit WHERE action='service_price'"), 1)
         body = await (await self.client.get('/prices')).text()

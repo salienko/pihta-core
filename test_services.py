@@ -125,20 +125,41 @@ class Services(unittest.IsolatedAsyncioTestCase):
     async def test_hidden_service_is_not_offered(self):
         ident = await self.book(self.start())
         await self.store.pool.execute("UPDATE service_settings SET available=false WHERE code='hat'")
-        listing = await self.screens.dispatch(ACTOR, 'services:' + ident)
+        listing = await self.screens.dispatch(ACTOR, 'svccat:' + ident + ':bath')
         self.assertFalse(any('Шапочка' in (label or '') for label in self.labels(listing)))
+
+    async def test_services_are_split_into_categories(self):
+        ident = await self.book(self.start())
+        listing = await self.screens.dispatch(ACTOR, 'services:' + ident)
+        labels = self.labels(listing)
+        self.assertIn('🧹 Веники', labels)
+        self.assertIn('💨 Аромапарение', labels)
+        self.assertIn('🧴 Банные принадлежности', labels)
+        self.assertFalse(any('Веник берёзовый' in (label or '') for label in labels), labels)
+
+        brooms = await self.screens.dispatch(ACTOR, 'svccat:' + ident + ':brooms')
+        self.assertIn('🧹 Веники', brooms.text)
+        self.assertEqual([b.get('text') for row in brooms.rows for b in row
+                          if (b.get('text') or '').startswith('Веник')],
+                         ['Веник берёзовый — 500 ₽', 'Веник дубовый — 600 ₽'])
+
+        await self.screens.dispatch(ACTOR, 'svcplus:' + ident + ':oak')
+        listing = await self.screens.dispatch(ACTOR, 'services:' + ident)
+        self.assertIn('🧹 Веники · выбрано 1', self.labels(listing))
 
     async def test_admin_adds_service(self):
         csrf = await self.admin_login()
         await self.client.get('/prices')
         response = await self.client.post(
             '/prices/service-add',
-            data={'code': 'broom', 'name': 'Веник пихтовый', 'price': '450', 'unit': 'шт.', 'csrf': csrf},
+            data={'code': 'broom', 'name': 'Веник пихтовый', 'price': '450', 'unit': 'шт.',
+                  'category': 'brooms', 'csrf': csrf},
             headers={'Origin': self.settings.web_url}, allow_redirects=False)
         self.assertEqual(response.status, 302)
         row = await self.store.service('broom')
         self.assertEqual(row['name'], 'Веник пихтовый')
         self.assertEqual(row['price'], 45000)
+        self.assertEqual(row['category'], 'brooms')
         self.assertTrue(row['available'])
 
         ident = await self.book(self.start())

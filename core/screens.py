@@ -125,24 +125,33 @@ class Screens:
         if state == 'guests':
             paid = data['guests'] - data['children']
             kids = data['children']
+            focus = data.get('guest_focus')
 
             def count(category, delta, enabled):
                 label = '−' if delta < 0 else '+'
                 return btn(label, b('guest', category + ('+' if delta > 0 else '-')) if enabled
                            else b('limit', 'min' if delta < 0 else 'max'))
 
-            body = rows([btn('Гости старше 7 лет', b('noop'))],
-                        [count('paid', -1, paid > 0 and data['guests'] > 1),
-                         btn(f'{paid} чел.', b('noop')),
-                         count('paid', 1, data['guests'] < 8)],
-                        [btn('Гости младше 7 лет', b('noop'))],
-                        [count('kid', -1, kids > 0 and data['guests'] > 1),
-                         btn(f'{kids} чел.', b('noop')),
-                         count('kid', 1, data['guests'] < 8)],
-                        [btn('📅 Выбрать дату', b('next', 'date'))],
-                        [btn('← Назад', b('back', 'phone'))])
+            def picker(title, category, value, other):
+                # Счётчик открывается только по нажатию на свою кнопку — как у услуг.
+                return rows([btn(title, b('noop'))],
+                            [count(category, -1, value > 0 and data['guests'] > 1),
+                             btn(f'{value} чел.', b('noop')),
+                             count(category, 1, data['guests'] < 8)],
+                            other)
+
+            older = f'Гости старше 7 лет — {paid} чел.'
+            younger = f'Гости младше 7 лет — {kids} чел.'
+            if focus == 'kid':
+                body = picker('Гости младше 7 лет', 'kid', kids, [btn(older, b('focus', 'paid'))])
+            elif focus == 'paid':
+                body = picker('Гости старше 7 лет', 'paid', paid, [btn(younger, b('focus', 'kid'))])
+            else:
+                body = rows([btn(older, b('focus', 'paid'))], [btn(younger, b('focus', 'kid'))])
+            body += rows([btn('📅 Выбрать дату', b('next', 'date'))], [btn('← Назад', b('back', 'phone'))])
             text = (f'👥 Уточните какое кол-во гостей планирует отдыхать?\n\n'
-                    f'Всего гостей: {data["guests"]} чел.\n\nУкажите кол-во гостей ↓')
+                    f'Всего гостей: {data["guests"]} чел.\n\n'
+                    + ('Укажите кол-во гостей ↓' if focus else 'Нажмите, чтобы указать кол-во ↓'))
             return Screen(text, photo='guests', rows=body + footer, state=state)
         if state == 'date':
             today = datetime.now(TZ).date()
@@ -358,17 +367,25 @@ class Screens:
         return Screen(card(r), photo='booking', rows=rows(*body) + nav())
 
     async def services(self, actor, ident, notice=''):
-        """Доп. услуги в действующей брони: ровный список услуг и итог по брони."""
+        """Доп. услуги: категории (веники, аромапарение, принадлежности) и итог по брони."""
         r = await self.store.get(actor, ident)
         if r['status'] not in ('pending', 'confirmed') or r['ends_at'] <= datetime.now(TZ):
             raise RuleError('Доп. услуги доступны только в действующей брони.')
         catalog, _, _ = await self.store.pricing()
         extras = dict(r.get('extras') or {})
         body = []
-        for code, item in catalog.items():
-            if not item.get('available', True):
+        for category in self.store.categories():
+            items = [item for item in catalog.values()
+                     if item.get('category') == category['code'] and item.get('available', True)]
+            if not items:
                 continue
-            body.append([btn(item['name'] + ' — ' + rub(item['price']), f'svc:{ident}:{code}')])
+            chosen = sum(int((extras.get(item['code']) or {}).get('qty', 0)) for item in items)
+            label = f"{category.get('emoji', '')} {category['name']}".strip()
+            if chosen:
+                label += f' · выбрано {chosen}'
+            body.append([btn(label, f'svccat:{ident}:{category["code"]}')])
+        if not body:
+            raise RuleError('Доп. услуги временно недоступны.')
         total = booking_total(r)
         due = max(0, total - r['paid'])
         chosen = sum(int((value or {}).get('qty', 0)) for value in extras.values())
@@ -383,7 +400,35 @@ class Screens:
         if due and r['paid']:
             body.append(await self.pay_row(actor, ident, 'balance', '💳 Доплатить — ' + rub(due)))
         body.append([btn('← Назад', 'open:' + ident)])
-        return Screen('\n'.join(lines), photo='booking', rows=rows(*body) + nav(), notice=notice)
+        return Screen('\n'.join(lines), photo='extras', rows=rows(*body) + nav(), notice=notice)
+
+    async def service_category(self, actor, ident, category, notice=''):
+        """Услуги одной категории: веники, аромапарение или банные принадлежности."""
+        r = await self.store.get(actor, ident)
+        if r['status'] not in ('pending', 'confirmed') or r['ends_at'] <= datetime.now(TZ):
+            raise RuleError('Доп. услуги доступны только в действующей брони.')
+        meta = next((item for item in self.store.categories() if item['code'] == category), None)
+        if not meta:
+            raise RuleError('Категория не найдена.')
+        catalog, _, _ = await self.store.pricing()
+        items = [item for item in catalog.values()
+                 if item.get('category') == category and item.get('available', True)]
+        if not items:
+            raise RuleError('В этой категории пока нет услуг.')
+        body = [[btn(item['name'] + ' — ' + rub(item['price']), f'svc:{ident}:{item["code"]}')]
+                for item in items]
+        total = booking_total(r)
+        due = max(0, total - r['paid'])
+        lines = [f"{meta.get('emoji', '')} {meta['name']}".strip(), '', 'Выберите услугу ↓',
+                 '', f'Итого по брони: {rub(total)}']
+        if due:
+            lines.append(f'К оплате: {rub(due)}')
+        else:
+            lines.append('✅ Стоимость оплачена полностью')
+        if due and r['paid']:
+            body.append(await self.pay_row(actor, ident, 'balance', '💳 Доплатить — ' + rub(due)))
+        body.append([btn('← К доп. услугам', 'services:' + ident)])
+        return Screen('\n'.join(lines), photo=category, rows=rows(*body) + nav(), notice=notice)
 
     async def service_quantity(self, actor, ident, code, notice=''):
         """Экран одной услуги: плюс, минус и текущее количество."""
@@ -407,8 +452,9 @@ class Screens:
             body.append([btn('Очистить', f'svczero:{ident}:{code}')])
         if due and r['paid']:
             body.append(await self.pay_row(actor, ident, 'balance', '💳 Доплатить — ' + rub(due)))
-        body.append([btn('← К списку услуг', 'services:' + ident)])
-        return Screen('\n'.join(lines), photo='booking', rows=rows(*body) + nav(), notice=notice)
+        body.append([btn('← К списку услуг', f'svccat:{ident}:{item["category"]}'
+                         if item.get('category') else 'services:' + ident)])
+        return Screen('\n'.join(lines), photo=code, rows=rows(*body) + nav(), notice=notice)
 
     async def change_service(self, actor, ident, code, delta):
         """Применяет изменение количества и показывает экран услуги заново."""
@@ -689,6 +735,8 @@ class Screens:
                 return await self.show(actor, parts[1])
             if action == 'services':
                 return await self.services(actor, parts[1])
+            if action == 'svccat':
+                return await self.service_category(actor, parts[1], parts[2])
             if action == 'svc':
                 return await self.service_quantity(actor, parts[1], parts[2])
             if action in ('svcplus', 'svcminus'):
@@ -896,9 +944,12 @@ class Screens:
                     new = 'guests'
                 if data.pop('editing', False) and data.get('start'):
                     new = 'review'
+            elif action == 'focus' and state == 'guests':
+                data['guest_focus'] = value if value in ('paid', 'kid') else None
             elif action == 'guest' and state == 'guests':
                 data = change_guests(data, value[:-1], 1 if value.endswith('+') else -1)
             elif action == 'next' and state == 'guests' and value == 'date':
+                data.pop('guest_focus', None)
                 accept_field(data, 'guests')
                 require(data, 'date')
                 new = 'review' if data.pop('editing', False) and data.get('start') else 'date'

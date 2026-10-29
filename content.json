@@ -8,51 +8,76 @@
       "code": "birch",
       "name": "Веник берёзовый",
       "price": 50000,
-      "unit": "шт."
+      "unit": "шт.",
+      "category": "brooms"
     },
     {
       "code": "oak",
       "name": "Веник дубовый",
       "price": 60000,
-      "unit": "шт."
+      "unit": "шт.",
+      "category": "brooms"
     },
     {
       "code": "eucalyptus",
       "name": "Аромапарение · серебристый эвкалипт",
       "price": 50000,
-      "unit": "шт."
+      "unit": "шт.",
+      "category": "aroma"
     },
     {
       "code": "lavender",
       "name": "Аромапарение лаванда",
       "price": 50000,
-      "unit": "шт."
+      "unit": "шт.",
+      "category": "aroma"
     },
     {
       "code": "sheet",
       "name": "Дополнительная простыня",
       "price": 10000,
-      "unit": "шт."
+      "unit": "шт.",
+      "category": "bath"
     },
     {
       "code": "slippers",
       "name": "Тапочки пластиковые новые",
       "price": 35000,
-      "unit": "пара"
+      "unit": "пара",
+      "category": "bath"
     },
     {
       "code": "towel",
       "name": "Полотенце в аренду",
       "price": 10000,
-      "unit": "шт."
+      "unit": "шт.",
+      "category": "bath"
     },
     {
       "code": "hat",
       "name": "Шапочка новая",
       "price": 20000,
-      "unit": "шт."
+      "unit": "шт.",
+      "category": "bath"
     }
   ],
   "holidays": {},
-  "map_url": "https://yandex.ru/maps/-/CXRjbF3n"
+  "map_url": "https://yandex.ru/maps/-/CXRjbF3n",
+  "service_categories": [
+    {
+      "code": "brooms",
+      "name": "Веники",
+      "emoji": "🧹"
+    },
+    {
+      "code": "aroma",
+      "name": "Аромапарение",
+      "emoji": "💨"
+    },
+    {
+      "code": "bath",
+      "name": "Банные принадлежности",
+      "emoji": "🧴"
+    }
+  ]
 }

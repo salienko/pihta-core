@@ -68,7 +68,8 @@ class GuestJourney(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(guests['state'], 'guests')
         self.assertIn('Всего гостей: 1 чел.', guests['text'])
 
-        plus = self.find(guests, 'guest:', 'paid+')
+        focused = await self.act(self.find(guests, 'focus:', 'paid'))
+        plus = self.find(focused, 'guest:', 'paid+')
         guests = await self.act(plus)
         self.assertIn('Всего гостей: 2 чел.', guests['text'])
 
@@ -113,7 +114,8 @@ class GuestJourney(unittest.IsolatedAsyncioTestCase):
         await self.act('begin')
         await self.act(text='Пётр')
         guests = await self.act(text='+79812440051')
-        plus = self.find(guests, 'guest:', 'paid+')
+        focused = await self.act(self.find(guests, 'focus:', 'paid'))
+        plus = self.find(focused, 'guest:', 'paid+')
         await self.act(plus)
         stale = await self.act(plus)
         self.assertIn('Экран уже изменился', stale['text'])

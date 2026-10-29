@@ -266,9 +266,15 @@ def make_app(store,settings,secure=True):
                     '<div class="tile-edit"><input name="amount" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(rates[code]))+'" aria-label="Новая цена" required><button>Сохранить</button></div>')
             body+=form(s,'/prices/rate/'+code,fields,None,css='tile')
         body+='</div></div>'
-        body+='<div class="card"><h2>Услуги</h2><p class="muted">Снимите галочку «доступна», чтобы услуга пропала из оформления, но осталась в истории.</p><div class="rows">'
+        body+='<div class="card"><h2>Услуги</h2><p class="muted">Снимите галочку «доступна», чтобы услуга пропала из оформления, но осталась в истории. Категория задаёт, в каком разделе гость увидит услугу.</p><div class="rows">'
+        cats=store.categories()
+        def cat_select(selected):
+            return ('<select name="category">'+''.join(
+                '<option value="'+e(c['code'])+'"'+(' selected' if c['code']==selected else '')+'>'
+                +e(c['name'])+'</option>' for c in cats)+'</select>')
         for code,item in catalog.items():
             fields=('<label class="cell"><span class="cell-label">Название</span><input name="name" maxlength="80" value="'+e(item['name'])+'" required></label>'
+                    '<label class="cell"><span class="cell-label">Категория</span>'+cat_select(item.get('category',''))+'</label>'
                     '<label class="cell"><span class="cell-label">Цена, ₽</span><input name="price" type="number" min="0.01" max="1000000" step="0.01" value="'+e(rubles(item['price']))+'" required><span class="hint">сейчас '+e(rub(item['price']))+'</span></label>'
                     '<label class="avail"><input type="checkbox" name="available" value="yes"'+(' checked' if item['available'] else '')+'> доступна</label>'
                     '<button>Сохранить</button>')
@@ -282,6 +288,7 @@ def make_app(store,settings,secure=True):
                       '<input name="code" maxlength="20" placeholder="например broom" required></label>'
                       '<label class="cell"><span class="cell-label">Название</span>'
                       '<input name="name" maxlength="80" placeholder="Веник пихтовый" required></label>'
+                      '<label class="cell"><span class="cell-label">Категория</span>'+cat_select('')+'</label>'
                       '<label class="cell"><span class="cell-label">Цена, ₽</span>'
                       '<input name="price" type="number" min="0.01" max="1000000" step="0.01" required></label>'
                       '<label class="cell"><span class="cell-label">Единица</span>'
@@ -295,7 +302,7 @@ def make_app(store,settings,secure=True):
         unit=str(data.get('unit','')).strip() or 'шт.'
         if len(unit)>20:raise RuleError('Единица измерения: до 20 символов.')
         await store.add_service(s['actor'],str(data.get('code','')).strip().lower(),name,
-                                money(data.get('price','')),unit)
+                                money(data.get('price','')),unit,str(data.get('category','')).strip())
         raise web.HTTPFound('/prices')
     async def price_rate(request):
         s=await auth(request,True);data=await request.post();code=request.match_info['code']
@@ -304,7 +311,7 @@ def make_app(store,settings,secure=True):
     async def price_service(request):
         s=await auth(request,True);data=await request.post();code=request.match_info['code']
         if not re_full_code(code):raise RuleError('Неизвестная услуга.')
-        await store.set_service(s['actor'],code,str(data.get('name','')).strip(),money(data.get('price','')),data.get('available')=='yes')
+        await store.set_service(s['actor'],code,str(data.get('name','')).strip(),money(data.get('price','')),data.get('available')=='yes',str(data.get('category','')).strip())
         raise web.HTTPFound('/prices')
 
     async def payments(request):

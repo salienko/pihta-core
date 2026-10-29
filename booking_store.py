@@ -200,16 +200,16 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
         for code,amount in DEFAULT_RATES.items():
             await db.execute('INSERT INTO price_settings(code,amount) VALUES($1,$2) ON CONFLICT(code) DO NOTHING',code,amount)
         for order,item in enumerate(self.settings.content['services']):
-            await db.execute('INSERT INTO service_settings(code,name,price,unit,available,sort_order) VALUES($1,$2,$3,$4,true,$5) ON CONFLICT(code) DO NOTHING',item['code'],item['name'],item['price'],item.get('unit','шт.'),order)
+            await db.execute('INSERT INTO service_settings(code,name,price,unit,category,available,sort_order) VALUES($1,$2,$3,$4,$5,true,$6) ON CONFLICT(code) DO NOTHING',item['code'],item['name'],item['price'],item.get('unit','шт.'),item.get('category',''),order)
             # Строка могла остаться от версии, где в таблице хранилась только доступность.
-            await db.execute('UPDATE service_settings SET name=COALESCE(name,$2),price=COALESCE(price,$3),unit=COALESCE(unit,$4),sort_order=$5 WHERE code=$1',item['code'],item['name'],item['price'],item.get('unit','шт.'),order)
+            await db.execute('UPDATE service_settings SET name=COALESCE(name,$2),price=COALESCE(price,$3),unit=COALESCE(unit,$4),category=CASE WHEN category=\'\' THEN $5 ELSE category END,sort_order=$6 WHERE code=$1',item['code'],item['name'],item['price'],item.get('unit','шт.'),item.get('category',''),order)
 
     async def pricing(self,db=None):
         """Каталог услуг, праздники и тарифы аренды. Цены читаются из БД, content.json — только сид."""
         db=db or self.pool
         if not await db.fetchval('SELECT EXISTS(SELECT 1 FROM service_settings) AND EXISTS(SELECT 1 FROM price_settings)'):
             await self.seed_prices(db)
-        catalog={r['code']:dict(code=r['code'],name=r['name'],price=r['price'],unit=r['unit'],available=r['available'])
+        catalog={r['code']:dict(code=r['code'],name=r['name'],price=r['price'],unit=r['unit'],available=r['available'],category=r['category'])
                  for r in await db.fetch('SELECT * FROM service_settings WHERE price IS NOT NULL ORDER BY sort_order,code')}
         rates=dict(DEFAULT_RATES,**{r['code']:r['amount'] for r in await db.fetch('SELECT code,amount FROM price_settings')})
         holidays=dict(self.settings.content.get('holidays',{}))
@@ -219,27 +219,40 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
     async def service(self,code):
         return await self.pool.fetchrow('SELECT * FROM service_settings WHERE code=$1',code)
 
-    async def add_service(self,actor,code,name,price,unit='шт.'):
-        """Новая услуга в ассортименте: админ задаёт код, название и цену."""
+    async def add_service(self,actor,code,name,price,unit='шт.',category=''):
+        """Новая услуга в ассортименте: админ задаёт код, название, цену и категорию."""
         if not re.fullmatch('[a-z][a-z0-9_]{1,19}',code):
             raise RuleError('Код услуги: латинские буквы, цифры и подчёркивание, от 2 до 20 символов.')
+        self.check_category(category)
         async with self.tx() as db:
             if await db.fetchval('SELECT 1 FROM service_settings WHERE code=$1',code):
                 raise RuleError('Услуга с таким кодом уже есть.')
             order=await db.fetchval('SELECT COALESCE(max(sort_order),0)+1 FROM service_settings')
-            await db.execute('INSERT INTO service_settings(code,name,price,unit,available,sort_order) '
-                             'VALUES($1,$2,$3,$4,true,$5)',code,name,price,unit,order)
-            await self.audit(db,None,actor,'service_added',dict(code=code,name=name,price=price))
+            await db.execute('INSERT INTO service_settings(code,name,price,unit,category,available,sort_order) '
+                             'VALUES($1,$2,$3,$4,$5,true,$6)',code,name,price,unit,category,order)
+            await self.audit(db,None,actor,'service_added',dict(code=code,name=name,price=price,category=category))
 
-    async def set_service(self,actor,code,name,price,available):
+    def categories(self):
+        """Категории услуг для меню гостя: веники, аромапарение, принадлежности."""
+        return list(self.settings.content.get('service_categories') or [])
+
+    def check_category(self,category):
+        codes={item['code'] for item in self.categories()}
+        if category not in codes:
+            raise RuleError('Выберите категорию услуги.')
+
+    async def set_service(self,actor,code,name,price,available,category=''):
         """Правка услуги из админки. Снимки существующих броней не меняются."""
         self.admin(actor)
         if not 1<=len(name)<=80:raise RuleError('Укажите название услуги до 80 символов.')
         if type(price) is not int or not 0<price<=100000000:raise RuleError('Цена должна быть целым числом больше нуля.')
+        if category:self.check_category(category)
         async with self.tx() as db:
-            if await db.execute('UPDATE service_settings SET name=$2,price=$3,available=$4,updated_at=now() WHERE code=$1',code,name,price,available)!='UPDATE 1':
+            if await db.execute('UPDATE service_settings SET name=$2,price=$3,available=$4,'
+                                'category=CASE WHEN $5=\'\' THEN category ELSE $5 END,updated_at=now() '
+                                'WHERE code=$1',code,name,price,available,category)!='UPDATE 1':
                 raise RuleError('Услуга не найдена. Обновите страницу.')
-            await self.audit(db,None,actor,'service_price',dict(code=code,name=name,price=price,available=available))
+            await self.audit(db,None,actor,'service_price',dict(code=code,name=name,price=price,available=available,category=category))
 
     async def set_rate(self,actor,code,amount):
         """Правка тарифа аренды или доплаты за гостя. Только для новых броней."""

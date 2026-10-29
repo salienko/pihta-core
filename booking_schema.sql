@@ -33,6 +33,7 @@ ALTER TABLE service_settings ALTER COLUMN available SET DEFAULT true;
 ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS name text;
 ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS price bigint CHECK(price IS NULL OR price>0);
 ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS unit text NOT NULL DEFAULT 'шт.';
+ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT '';
 ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 0;
 ALTER TABLE service_settings ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 -- Тарифы аренды: будни днём, вечер и выходные, доплата за гостя сверх четырёх
