@@ -17,7 +17,9 @@ def build_app(store, settings, token=''):
         except Exception:
             db = False
         return web.json_response({"service": "pihta-core", "db": db,
-                                  "paykeeper": settings.paykeeper_enabled},
+                                  "paykeeper": settings.paykeeper_enabled,
+                                  "settlement": settings.paykeeper_settlement_enabled,
+                                  "settlement_quiet": settings.paykeeper_settlement_quiet},
                                  status=200 if db else 503)
 
     async def ready(request):
