@@ -78,7 +78,9 @@ class PayKeeperStore:
             if not req or req['state']!='requested' or row['status'] not in ('pending','confirmed') or row['ends_at']<=await self.clock(db) or row['paid']!=item['paid_before']:return
             await db.execute("UPDATE payment_requests SET state='linked',url=$2,revision=revision+1 WHERE id=$1",req['id'],url)
             await self.enqueue(db,row,'paylink:'+req['id']+':'+str(req['revision']+1),
-                               '💳 Оплата брони № '+row['id']+'\nСумма: '+rub(item['amount'])+'\nПосле оплаты подтверждение поступит автоматически.',[row['telegram_id']])
+                               '💳 Оплата брони № '+row['id']+'\nСумма: '+rub(item['amount'])+
+                               '\n\nСсылка на оплату:\n'+url+
+                               '\n\nПосле оплаты подтверждение поступит автоматически.',[row['telegram_id']])
 
     async def accept_paykeeper(self,values,amount):
         from booking_store import unpack
