@@ -41,7 +41,7 @@ async def deliver_once(store, settings, channels, session):
         return False
     try:
         owner = await store.pool.fetchval('SELECT telegram_id FROM bookings WHERE id=$1', row['booking_id'])
-        if row['recipient'] != owner and row['recipient'] not in settings.admin_ids:
+        if row['recipient'] not in settings.admin_ids and not await store.owns(store.pool, row['recipient'], owner):
             await store.failed(row['id'], 'recipient_access_removed', permanent=True)
             return True
         if row['event'].startswith('reminder:'):

@@ -80,7 +80,8 @@ class PayKeeperStore:
             await self.enqueue(db,row,'paylink:'+req['id']+':'+str(req['revision']+1),
                                '💳 Оплата брони № '+row['id']+'\nСумма: '+rub(item['amount'])+
                                '\n\nСсылка на оплату:\n'+url+
-                               '\n\nПосле оплаты подтверждение поступит автоматически.',[row['telegram_id']])
+                               '\n\nПосле оплаты подтверждение поступит автоматически.',
+                               [item.get('actor') or row['telegram_id']])
 
     async def accept_paykeeper(self,values,amount):
         from booking_store import unpack
