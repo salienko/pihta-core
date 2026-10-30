@@ -174,6 +174,12 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
         if not d or (token and token!=d['token']) or d['state'] in ('submitted','discarded'):raise RuleError('Откройте новое оформление через «Забронировать».')
         return d
 
+    async def draft_exists(self,actor,token):
+        """Есть ли у гостя черновик с таким токеном (чтобы отличить его от id брони)."""
+        return bool(await self.pool.fetchval(
+            "SELECT 1 FROM drafts WHERE telegram_id=$1 AND token=$2 AND state NOT IN ('submitted','discarded')",
+            actor,token))
+
     async def save(self,actor,d,state,data):
         result=await self.pool.execute('UPDATE drafts SET state=$1,data=$2::jsonb,revision=revision+1,updated_at=now() WHERE telegram_id=$3 AND token=$4 AND revision=$5 AND state<>\'submitted\'',state,json.dumps(data,ensure_ascii=False),actor,d['token'],d['revision'])
         if result!='UPDATE 1':raise RuleError('Экран уже изменился. Откройте текущее оформление.')
@@ -484,6 +490,32 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
             updated=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',ident))
             await self.enqueue(db,updated,'account:'+key,card(updated),[row['telegram_id']])
 
+    async def send_guest_message(self,actor,ident,text,key=None):
+        """Сообщение гостя администратору по брони: уходит админам, ответ — через панель."""
+        text=(text or '').strip()
+        if not 2<=len(text)<=1000:raise RuleError('Сообщение от 2 до 1000 символов.')
+        async with self.tx() as db:
+            row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1 FOR UPDATE',ident))
+            if not row:raise RuleError('Бронь не найдена.')
+            if not await self.owns(db,actor,row['telegram_id']):raise RuleError('Бронь недоступна.')
+            name=row['data'].get('name','гость')
+            when=row['starts_at'].astimezone(TZ).strftime('%d.%m.%Y в %H:%M')
+            event='guestmsg:'+(key or secrets.token_hex(6))
+            if await db.fetchval('SELECT 1 FROM outbox WHERE booking_id=$1 AND event=$2',ident,event):
+                return False
+            await self.enqueue(db,row,event,
+                               f'✉️ Сообщение от гостя\nБронь № {ident} · {when}\n👤 {name}\n\n{text}',
+                               list(self.settings.admin_ids))
+            await self.audit(db,ident,actor,'guest_message',{'text':text})
+            return True
+
+    async def chat_history(self,ident,limit=12):
+        """Переписка по брони: сообщения гостя и ответы администратора."""
+        rows=await self.pool.fetch(
+            "SELECT event,text,due_at AS created_at FROM outbox WHERE booking_id=$1 AND "
+            "(event LIKE 'guestmsg:%' OR event LIKE 'note:%') ORDER BY id DESC LIMIT $2",ident,limit)
+        return [dict(r) for r in reversed(rows)]
+
     async def staff_note(self,actor,ident,key,text):
         self.admin(actor)
         if not 2<=len(text.strip())<=1000:raise RuleError('Сообщение от 2 до 1000 символов.')
@@ -491,7 +523,8 @@ class BookingStore(ReserveStore,StaffBookingStore,GuestStore,FinalReceiptStore,P
             row=unpack(await db.fetchrow('SELECT * FROM bookings WHERE id=$1',ident))
             if not row:raise RuleError('Бронь не найдена.')
             if await db.fetchval('SELECT key FROM operations WHERE key=$1',key):return
-            await self.enqueue(db,row,'note:'+key,f"По брони № {ident}:\n{text.strip()}",[row['telegram_id']])
+            await self.enqueue(db,row,'note:'+key,
+                               f"💬 Сообщение от администратора\nБронь № {ident}\n\n{text.strip()}",[row['telegram_id']])
             await self.audit(db,ident,actor,'message',{'text':text.strip()})
             await db.execute('INSERT INTO operations VALUES($1,$2,$3)',key,actor,ident)
 

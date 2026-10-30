@@ -251,3 +251,27 @@ class Services(unittest.IsolatedAsyncioTestCase):
         listing = await self.screens.dispatch(ACTOR, 'list:0:0')
         self.assertTrue(any((label or '').endswith('· Подтверждено')
                             for label in self.labels(listing)), self.labels(listing))
+
+    async def test_guest_messages_reach_admins_and_reply_reaches_guest(self):
+        """Гость пишет администратору, ответ администратора приходит гостю."""
+        ident = await self.book(self.start())
+        await self.screens.dispatch(ACTOR, 'chat:' + ident)
+        await self.screens.dispatch(ACTOR, 'msg:' + ident)
+        sent = await self.screens.text(ACTOR, 'Можно ли прийти на полчаса раньше?')
+        self.assertEqual(sent.notice, 'Сообщение отправлено администратору.')
+
+        admin = self.settings.admin_ids[0]
+        rows = await self.store.pool.fetch(
+            "SELECT booking_id, recipient, text FROM outbox WHERE booking_id=$1 AND event LIKE 'guestmsg:%'", ident)
+        self.assertEqual({r['recipient'] for r in rows}, set(self.settings.admin_ids))
+        self.assertIn('Можно ли прийти на полчаса раньше?', rows[0]['text'])
+
+        await self.store.staff_note(admin, ident, 'N' + secrets.token_hex(8), 'Да, приходите.')
+        note = await self.store.pool.fetchrow(
+            "SELECT text FROM outbox WHERE booking_id=$1 AND event LIKE 'note:%'", ident)
+        self.assertIn('Сообщение от администратора', note['text'])
+        self.assertIn('Да, приходите.', note['text'])
+
+        history = await self.screens.dispatch(ACTOR, 'chat:' + ident)
+        self.assertIn('Вы: Можно ли прийти на полчаса раньше?', history.text)
+        self.assertIn('Администратор: Да, приходите.', history.text)

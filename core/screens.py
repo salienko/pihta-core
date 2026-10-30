@@ -15,6 +15,7 @@ Action strings keep the Telegram callback grammar
 import asyncio
 import calendar
 import json
+import secrets
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -371,7 +372,30 @@ class Screens:
             body.append([btn('Отменить бронирование', 'cancelask:' + ident)])
         body += [[btn('☎️ Администратор', 'contact')],
                  [btn('← Назад', 'list:0:0' if r['status'] in ('pending', 'confirmed') else 'list:1:0')]]
+        body.insert(len(body) - 2, [btn('💬 Написать администратору', 'chat:' + ident)])
         return Screen(card(r), photo='booking', rows=rows(*body) + nav(), notice=notice)
+
+    async def booking_chat(self, actor, ident, notice=''):
+        """Переписка по брони: гость пишет администратору, ответ приходит в этот же чат."""
+        r = await self.store.get(actor, ident)
+        history = await self.store.chat_history(ident)
+        lines = [f'💬 Переписка по брони № {ident}', '']
+        if not history:
+            lines.append('Пока сообщений нет. Напишите — администратор ответит здесь же.')
+        for item in history:
+            mine = str(item['event']).startswith('guestmsg:')
+            parts = [l for l in str(item['text']).splitlines()]
+            # Служебные строки: «✉️ Сообщение от гостя» / «💬 Сообщение от
+            # администратора», строка с бронью и строка «👤 Имя».
+            body = [l for l in parts[2:] if l.strip() and not l.strip().startswith('👤')]
+            lines.append(('Вы: ' if mine else 'Администратор: ') + ('\n'.join(body) or str(item['text'])))
+            lines.append('')
+        body = []
+        if r['status'] in ('pending', 'confirmed'):
+            body.append([btn('✏️ Написать сообщение', 'msg:' + ident)])
+        body.append([btn('← Назад', 'open:' + ident)])
+        return Screen('\n'.join(lines).rstrip(), photo='booking',
+                      rows=rows(*body) + nav(), notice=notice)
 
     async def services(self, actor, ident, notice=''):
         """Доп. услуги: категории (веники, аромапарение, принадлежности) и итог по брони."""
@@ -499,11 +523,35 @@ class Screens:
 
     async def contact(self, actor):
         back = 'resume' if await self.unfinished(actor) else 'home'
-        return Screen('☎️ Администратор\n\n' + self.settings.content['phone'] +
-                      '\n\nПозвоните по этому номеру.\n'
-                      'Для нестандартного времени согласуйте длительность заранее.',
-                      rows=rows([btn('📍 Маршрут', url=self.settings.content['map_url'])],
-                                [btn('← Назад', back)]) + nav())
+        d = await self.unfinished(actor)
+        body = [[btn('📍 Маршрут', url=self.settings.content['map_url'])]]
+        lines = ['☎️ Администратор', '', self.settings.content['phone'],
+                 '', 'Позвоните по этому номеру.',
+                 'Для нестандартного времени согласуйте длительность заранее.']
+        if d and d['data'].get('start'):
+            body.insert(0, [btn('✏️ Написать сообщение', 'msg:' + d['token'])])
+            lines += ['', 'Или напишите сообщение — администратор ответит здесь же.']
+        body.append([btn('← Назад', back)])
+        return Screen('\n'.join(lines), photo='booking', rows=rows(*body) + nav())
+
+    async def ask_message(self, actor, ref):
+        """Просит текст сообщения администратору: по брони или по черновику.
+
+        ref — либо id отправленной брони, либо токен черновика (тогда брони ещё нет).
+        """
+        if await self.store.draft_exists(actor, ref):
+            return Screen('✏️ Сообщение администратору\n\n'
+                          'Напишите вопрос или просьбу одним сообщением — администратор ответит сюда.\n'
+                          'До 1000 символов.',
+                          photo='booking',
+                          rows=rows([btn('← Назад', 'contact')]) + nav(), state='guest_message')
+        await self.store.get(actor, ref)
+        await self.store.set_pending_input(actor, 'guest_message', ref)
+        return Screen('✏️ Сообщение администратору\n\n'
+                      'Напишите вопрос или просьбу одним сообщением — ответ придёт сюда.\n'
+                      'До 1000 символов.',
+                      photo='booking',
+                      rows=rows([btn('← Назад', 'chat:' + ref)]) + nav(), state='guest_message')
 
     # ---------- гость: подтверждённый номер ----------
 
@@ -650,6 +698,22 @@ class Screens:
                 screen = await self.show(actor, pending['ref'])
                 return Screen(screen.text, screen.photo, screen.rows, screen.state,
                               notice='Телефон обновлён: ' + phone)
+            if pending and pending['kind'] == 'guest_message' and pending['ref']:
+                ident = pending['ref']
+                if text in ('🏠 Главное меню', 'Главное меню', '/start', '/menu'):
+                    await self.store.clear_pending_input(actor)
+                    return await self.home(actor)
+                if text in ('← Назад', '/back'):
+                    await self.store.clear_pending_input(actor)
+                    return await self.booking_chat(actor, ident)
+                if not 2 <= len(text) <= 1000:
+                    return Screen('Сообщение от 2 до 1000 символов.\n\nНапишите текст одним сообщением.',
+                                  photo='booking',
+                                  rows=rows([btn('← Назад', 'chat:' + ident)]) + nav(),
+                                  state='guest_message')
+                await self.store.send_guest_message(actor, ident, text, key=secrets.token_hex(6))
+                await self.store.clear_pending_input(actor)
+                return await self.booking_chat(actor, ident, 'Сообщение отправлено администратору.')
             d = await self.unfinished(actor)
             if not d:
                 return await self.home(actor)
@@ -745,6 +809,13 @@ class Screens:
                 return await self.service_category(actor, parts[1], parts[2])
             if action == 'svcdone':
                 return await self.show(actor, parts[1])
+            if action == 'chat':
+                return await self.booking_chat(actor, parts[1])
+            if action == 'msg':
+                return await self.ask_message(actor, parts[1])
+            if action == 'guestmsg':
+                await self.store.send_guest_message(actor, parts[1], parts[2], key=parts[3])
+                return await self.booking_chat(actor, parts[1], 'Сообщение отправлено администратору.')
             if action == 'svc':
                 return await self.service_quantity(actor, parts[1], parts[2])
             if action in ('svcplus', 'svcminus'):

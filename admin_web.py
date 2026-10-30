@@ -155,6 +155,16 @@ def make_app(store,settings,secure=True):
             body+='<div class="card"><h2>'+title+'</h2>'+form(s,'/booking/'+r['id']+'/'+action,'<label>Сумма, ₽<input name="amount" type="number" min="0.01" max="1000000" step="0.01" required></label><label>Комментарий<input name="note" minlength="2" maxlength="500" required></label>','Зафиксировать факт')+'</div>'
         body+='</div><div class="card"><h2>Фактическое посещение — отдельно от брони</h2><p>Исходная сумма и состав сохраняются. Меньшее число гостей не снижает стоимость.</p>'+form(s,'/booking/'+r['id']+'/actual','<label>Фактических гостей<input name="guests" type="number" min="1" max="8" required></label><label>Итог фактического расчёта, ₽<input name="total" type="number" min="0" step="0.01" required></label><label>Обоснование расчёта<textarea name="note" minlength="2" maxlength="500" required></textarea></label>')+'</div>'
         if r['telegram_id'] is not None:body+='<div class="card"><h2>Связаться с гостем</h2><p>Уточните детали посещения. Сообщение не меняет бронь и занятость.</p>'+form(s,'/booking/'+r['id']+'/message','<label>Сообщение<textarea name="text" minlength="2" maxlength="1000" required></textarea></label>','Отправить гостю')+'</div>'
+        history=await store.chat_history(r['id'],20)
+        if history:
+            body+='<div class="card"><h2>Переписка с гостем</h2>'
+            for item in history:
+                mine=str(item['event']).startswith('note:')
+                lines=[l for l in str(item['text']).splitlines()]
+                text='\n'.join(lines[2:]).strip() if len(lines)>2 and not mine else str(item['text'])
+                body+=('<p><strong>'+('Администратор' if mine else 'Гость')+'</strong> · '
+                       +e(str(item['created_at'].astimezone(TZ)))+'<br>'+e(text)+'</p>')
+            body+='</div>'
         if r['status'] in ('confirmed','completed'):body+='<div class="card">'+form(s,'/booking/'+r['id']+'/no_show','<label>Комментарий<input name="note" minlength="2" maxlength="500" required></label>','Отметить неявку')+'</div>'
         events=await store.pool.fetch('SELECT * FROM audit WHERE booking_id=$1 ORDER BY id DESC LIMIT 100',r['id'])
         body+='<div class="card"><h2>История действий</h2>'

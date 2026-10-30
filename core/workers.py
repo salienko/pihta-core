@@ -53,6 +53,13 @@ async def deliver_once(store, settings, channels, session):
             if not await store.reserve_delivery_allowed(row['booking_id'], row['event'], row['recipient']):
                 await store.delivered(row['id'])
                 return True
+        if row['event'].startswith(('guestmsg:', 'note:')):
+            # Переписка с администратором не зависит от статуса брони: ответить
+            # гостю нужно и по отменённой, и по завершённой — но только самому гостю.
+            if row['recipient'] not in settings.admin_ids and not await store.owns(
+                    store.pool, row['recipient'], owner):
+                await store.failed(row['id'], 'recipient_access_removed', permanent=True)
+                return True
         payment = await store.payment_delivery(row['event'])
         if row['event'].startswith(('payreq:', 'paylink:', 'payreported:')) and not payment:
             await store.delivered(row['id'])
