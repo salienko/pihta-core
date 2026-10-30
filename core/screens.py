@@ -315,7 +315,10 @@ class Screens:
         found = await self.store.listing(actor, history, offset=offset)
         body = []
         for r in found[:20]:
-            body.append([btn(f'{r["starts_at"].astimezone(TZ):%d.%m · %H:%M} · {LABELS[r["status"]]}',
+            label = LABELS[r['status']]
+            if r['status'] == 'confirmed' and booking_total(r) > r.get('paid', 0):
+                label = 'Подтверждено, требует доплаты'
+            body.append([btn(f'{r["starts_at"].astimezone(TZ):%d.%m · %H:%M} · {label}',
                              'open:' + r['id'])])
         if len(found) > 20:
             body.append([btn('Далее →', f'list:{int(history)}:{offset + 20}')])

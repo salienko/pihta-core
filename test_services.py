@@ -232,3 +232,22 @@ class Services(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(minus.notice, '')
         zero = await self.screens.dispatch(ACTOR, 'svczero:' + ident + ':birch')
         self.assertEqual(zero.notice, '')
+
+    async def test_list_shows_the_same_status_as_the_card(self):
+        """В списке броней статус такой же, как в карточке: подтверждено + доплата."""
+        ident = await self.book(self.start())
+        paid = booking_total(await self.store.get(ACTOR, ident))
+        await self.store.pool.execute("UPDATE bookings SET paid=$2,status='confirmed' WHERE id=$1", ident, paid)
+        await self.screens.dispatch(ACTOR, 'svcplus:' + ident + ':birch')
+
+        listing = await self.screens.dispatch(ACTOR, 'list:0:0')
+        self.assertTrue(any('Подтверждено, требует доплаты' in (label or '')
+                            for label in self.labels(listing)), self.labels(listing))
+        card = await self.screens.dispatch(ACTOR, 'open:' + ident)
+        self.assertIn('Подтверждено, требует доплаты', card.text)
+
+        total = booking_total(await self.store.get(ACTOR, ident))
+        await self.store.pool.execute('UPDATE bookings SET paid=$2 WHERE id=$1', ident, total)
+        listing = await self.screens.dispatch(ACTOR, 'list:0:0')
+        self.assertTrue(any((label or '').endswith('· Подтверждено')
+                            for label in self.labels(listing)), self.labels(listing))

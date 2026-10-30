@@ -76,7 +76,7 @@ def card(row, personal=True):
     icons={'pending':'⏳','confirmed':'✅','cancelled':'✕','rejected':'✕','expired':'✕','completed':'✓','draft':'✏️'}
     min_age=d.get('guest_min_paid_age',7)
     due=(booking_total(row))-row.get('paid',0)
-    status_label='Бронь подтверждена, требуется доплата' if row['status']=='confirmed' and due>0 else LABELS[row['status']]
+    status_label='Подтверждено, требует доплаты' if row['status']=='confirmed' and due>0 else LABELS[row['status']]
     lines=[f"Бронь № {row['id']}",f"{icons[row['status']]} {status_label}",'',f'📅 {start:%d.%m.%Y} · {start:%H:%M}–{end:%H:%M}',
            'Время московское','',f"Кол-во гостей: {d['guests']}",f"Гости от {min_age} лет: {d['guests']-d['children']}",
            f"Дети до {min_age-1} лет включительно: {d['children']}",f"Простыни включены: {d['guests']} шт.",'',f"Аренда: {rub(q['rent'])}"]
