@@ -221,4 +221,14 @@ class Services(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Веник берёзовый 1 шт. 500 ₽', card.text)
         self.assertIn('Остаток: 500 ₽', card.text)
         self.assertTrue(any('Доплатить за услуги — 500 ₽' in (label or '') for label in self.labels(card)))
-        self.assertEqual(card.notice, 'Выбор сохранён — смотрите сумму к доплате в брони.')
+        self.assertEqual(card.notice, '')
+
+    async def test_counter_changes_do_not_send_extra_messages(self):
+        """«+»/«−»/«Очистить» только обновляют экран — никаких сообщений про оплату."""
+        ident = await self.book(self.start())
+        plus = await self.screens.dispatch(ACTOR, 'svcplus:' + ident + ':birch')
+        self.assertEqual(plus.notice, '')
+        minus = await self.screens.dispatch(ACTOR, 'svcminus:' + ident + ':birch')
+        self.assertEqual(minus.notice, '')
+        zero = await self.screens.dispatch(ACTOR, 'svczero:' + ident + ':birch')
+        self.assertEqual(zero.notice, '')

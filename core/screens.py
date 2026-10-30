@@ -469,10 +469,7 @@ class Screens:
         cart = {key: int((value or {}).get('qty', 0)) for key, value in extras.items()}
         cart[code] = max(0, cart.get(code, 0) + delta)
         await self.store.set_booking_services(actor, ident, cart)
-        after = await self.store.get(actor, ident)
-        due = max(0, booking_total(after) - after['paid'])
-        notice = (f'К оплате — {rub(due)}' if due and after['paid'] else 'Количество обновлено.')
-        return await self.service_quantity(actor, ident, code, notice)
+        return await self.service_quantity(actor, ident, code)
 
     async def admin_link(self, actor):
         self.store.admin(actor)
@@ -744,7 +741,7 @@ class Screens:
             if action == 'svccat':
                 return await self.service_category(actor, parts[1], parts[2])
             if action == 'svcdone':
-                return await self.show(actor, parts[1], 'Выбор сохранён — смотрите сумму к доплате в брони.')
+                return await self.show(actor, parts[1])
             if action == 'svc':
                 return await self.service_quantity(actor, parts[1], parts[2])
             if action in ('svcplus', 'svcminus'):
@@ -756,7 +753,7 @@ class Screens:
                 extras.pop(parts[2], None)
                 cart = {key: int((value or {}).get('qty', 0)) for key, value in extras.items()}
                 await self.store.set_booking_services(actor, parts[1], cart)
-                return await self.service_quantity(actor, parts[1], parts[2], 'Услуга убрана.')
+                return await self.service_quantity(actor, parts[1], parts[2])
             if action == 'legacy':
                 r = await self.store.legacy(actor, parts[1])
                 if not r:
