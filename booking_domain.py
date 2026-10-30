@@ -92,7 +92,6 @@ def card(row, personal=True):
     if actual is not None:lines.append('Фактический расчёт: '+rub(actual))
     paid=row.get('paid',0)
     if paid>=total:lines.append('✅ Внесена вся стоимость')
-    elif paid>=200000:lines.append('✅ Внесена предоплата')
     if paid:lines.append('Оплачено: '+rub(paid))
     if row['status'] in ('cancelled','rejected','expired'):
         if paid:lines.append('Расчёт и возможный возврат — через администратора.')

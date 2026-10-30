@@ -349,7 +349,7 @@ class Screens:
                 body.append(await self.pay_row(actor, ident, 'full',
                                                '💳 Оплатить полностью — ' + rub(payment_total(r))))
             else:
-                label = ('💳 Доплатить за услуги — ' if int(r.get('extras_total') or 0) else '💳 Оплатить — ')
+                label = '💳 Доплатить — '
                 body.append(await self.pay_row(actor, ident, 'balance', label + rub(due)))
             requests = await self.store.payment_requests(actor, ident)
             linked = next((req for req in requests if req['url']), None)
